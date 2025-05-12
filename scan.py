@@ -409,7 +409,7 @@ async def delete_session(event):
 async def get_latest_otp(session):
     """Get the latest OTP message from the session."""
     client = None
-    session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}"
+    session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}.session"
     
     result = {'success': False, 'error': 'Error tidak diketahui'}
     
@@ -418,55 +418,122 @@ async def get_latest_otp(session):
         if not session.get('session_data'):
             return {'success': False, 'error': "Data session tidak tersedia"}
             
-        # Write session data to file
+        # Write session data to file - ensure it has .session extension
         with open(session_path, 'wb') as f:
             f.write(bytes.fromhex(session['session_data']))
         
         # Add a small delay to avoid connection errors
         await asyncio.sleep(1)
         
-        # Connect to Telegram with proper error handling
-        client = TelegramClient(session_path, API_ID, API_HASH, connection_retries=3)
-        await client.connect()
+        # Connect to Telegram with better error handling and more retries
+        client = TelegramClient(
+            session_path.replace('.session', ''),  # TelegramClient adds .session itself
+            API_ID, 
+            API_HASH, 
+            connection_retries=5,
+            retry_delay=2
+        )
+        
+        # Use a longer timeout for connection
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {'success': False, 'error': "Koneksi timeout"}
+        
+        # Wait a bit after connection before checking authorization
+        await asyncio.sleep(2)
         
         # Ensure we're connected and authorized
         if not await client.is_user_authorized():
-            return {'success': False, 'error': "Session tidak terotorisasi"}
+            print(f"Session {session.get('phone')} tidak terotorisasi saat mencoba get OTP")
+            # Try once more with forced reconnection
+            await client.disconnect()
+            await asyncio.sleep(2)
+            await client.connect()
+            await asyncio.sleep(1)
+            
+            if not await client.is_user_authorized():
+                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
             
         # Add a small delay before message retrieval
-        await asyncio.sleep(1)
+        await asyncio.sleep(2)
         
         try:
-            # First, try to get messages from the OTP sender
-            sender_entities = [OTP_SENDER, '777000']  # Try both OTP sender and Telegram service account
+            # Try both OTP sender and Telegram service account with better handling
+            sender_entities = [OTP_SENDER, '+42777', '777000', 'telegram']  # Add more variations of OTP sender
             
             for sender in sender_entities:
                 try:
+                    print(f"Mencoba mendapatkan pesan dari {sender}")
                     # Get messages from this sender
                     messages = []
-                    async for message in client.iter_messages(sender, limit=10):
-                        if message and message.message:
-                            messages.append(message)
+                    try:
+                        async for message in client.iter_messages(sender, limit=15):
+                            if message and message.message:
+                                messages.append(message)
+                    except Exception as iter_error:
+                        print(f"Error iterating messages from {sender}: {iter_error}")
+                        continue
                     
                     # Look for OTP in messages
-                    for msg in messages:
-                        if not msg.message:
-                            continue
-                            
-                        # Extract OTP (usually a 5-6 digit number)
-                        import re
-                        otp_match = re.search(r'\b\d{4,6}\b', msg.message)
-                            
-                        if otp_match:
-                            otp_code = otp_match.group(0)
-                            return {
-                                'success': True,
-                                'otp': otp_code,
-                                'time': msg.date.strftime('%Y-%m-%d %H:%M:%S')
-                            }
+                    if messages:
+                        print(f"Ditemukan {len(messages)} pesan dari {sender}")
+                        for msg in messages:
+                            if not msg.message:
+                                continue
+                                
+                            # Extract OTP (usually a 5-6 digit number)
+                            import re
+                            otp_match = re.search(r'\b\d{4,6}\b', msg.message)
+                                
+                            if otp_match:
+                                otp_code = otp_match.group(0)
+                                return {
+                                    'success': True,
+                                    'otp': otp_code,
+                                    'time': msg.date.strftime('%Y-%m-%d %H:%M:%S')
+                                }
+                    else:
+                        print(f"Tidak ada pesan dari {sender}")
                 except Exception as msg_error:
                     print(f"Error retrieving messages from {sender}: {msg_error}")
                     continue
+            
+            # If we get here, no OTP was found, try getting recent messages from any source
+            try:
+                print("Mencari pesan OTP dari pesan terbaru")
+                recent_messages = []
+                async for dialog in client.iter_dialogs(limit=5):
+                    try:
+                        async for message in client.iter_messages(dialog.entity, limit=5):
+                            if message and message.message:
+                                recent_messages.append((dialog.name, message))
+                    except:
+                        continue
+                
+                # Check all recent messages for OTP patterns
+                for dialog_name, msg in recent_messages:
+                    if not msg.message:
+                        continue
+                        
+                    # Look for OTP patterns in message
+                    import re
+                    otp_match = re.search(r'\b\d{4,6}\b', msg.message)
+                    
+                    # Also look for typical OTP message patterns
+                    otp_keywords = ['code', 'otp', 'verification', 'login', 'kode', 'verifikasi']
+                    has_otp_keywords = any(keyword in msg.message.lower() for keyword in otp_keywords)
+                    
+                    if otp_match and has_otp_keywords:
+                        otp_code = otp_match.group(0)
+                        return {
+                            'success': True,
+                            'otp': otp_code,
+                            'time': msg.date.strftime('%Y-%m-%d %H:%M:%S'),
+                            'source': dialog_name
+                        }
+            except Exception as recent_error:
+                print(f"Error checking recent messages: {recent_error}")
             
             # If we get here, no OTP was found
             return {'success': False, 'error': "Tidak menemukan pesan OTP dari server Telegram"}
@@ -499,8 +566,8 @@ async def get_latest_otp(session):
             await asyncio.sleep(1)  # Small delay before cleanup
             if os.path.exists(session_path):
                 os.remove(session_path)
-            if os.path.exists(session_path + '.session'):
-                os.remove(session_path + '.session')
+            if os.path.exists(session_path.replace('.session', '') + '.session'):
+                os.remove(session_path.replace('.session', '') + '.session')
         except Exception as e:
             print(f"Error cleaning up session files: {e}")
 
