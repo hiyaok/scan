@@ -1,4 +1,5 @@
 #
+#
 import os
 import asyncio
 import time
@@ -1411,7 +1412,10 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                 with open(session_path, 'wb') as f:
                     f.write(bytes.fromhex(session['session_data']))
                 
-                # Connect to Telegram
+                # Add delay before connection
+                await asyncio.sleep(2)
+                
+                # Connect to Telegram with better parameters
                 client = TelegramClient(
                     session_path.replace('.session', ''), 
                     API_ID, 
@@ -1422,7 +1426,7 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                 
                 # Connect with timeout
                 try:
-                    await asyncio.wait_for(client.connect(), timeout=20)
+                    await asyncio.wait_for(client.connect(), timeout=30)
                 except asyncio.TimeoutError:
                     results_per_account.append({
                         'phone': session.get('phone', 'Tidak diketahui'),
@@ -1432,17 +1436,17 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                     })
                     continue
                 
-                # Wait after connection
-                await asyncio.sleep(2)
+                # Wait longer after connection
+                await asyncio.sleep(3)
                 
                 # Ensure we're connected and authorized
                 if not await client.is_user_authorized():
                     print(f"Session {session.get('phone')} tidak terotorisasi")
                     # Try once more with forced reconnection
                     await client.disconnect()
-                    await asyncio.sleep(2)
+                    await asyncio.sleep(3)
                     await client.connect()
-                    await asyncio.sleep(1)
+                    await asyncio.sleep(2)
                     
                     if not await client.is_user_authorized():
                         results_per_account.append({
@@ -1464,6 +1468,8 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                 
                 # Try to join the group first
                 group_entity = None
+                joined_successfully = False
+                
                 try:
                     # Check if it's a private group link
                     if group_link.startswith('https://t.me/+') or group_link.startswith('https://t.me/joinchat/'):
@@ -1474,19 +1480,32 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                         try:
                             # Try to join the group
                             await client(functions.messages.ImportChatInviteRequest(invite_hash))
-                            await asyncio.sleep(2)
+                            # Add more delay after joining
+                            await asyncio.sleep(5)
+                            joined_successfully = True
                             
                             # Find the group we just joined
-                            async for dialog in client.iter_dialogs(limit=10):
+                            async for dialog in client.iter_dialogs(limit=15):
                                 if dialog.is_group or dialog.is_channel:
+                                    # Get the most recently joined group
                                     group_entity = dialog.entity
                                     break
                         except errors.UserAlreadyParticipantError:
                             # Already in the group, try to find it
-                            async for dialog in client.iter_dialogs(limit=20):
+                            joined_successfully = True
+                            async for dialog in client.iter_dialogs(limit=30):
                                 if dialog.is_group or dialog.is_channel:
-                                    group_entity = dialog.entity
-                                    break
+                                    # Try to find the group by name or hash
+                                    if invite_hash.lower() in dialog.entity.username.lower() if dialog.entity.username else False:
+                                        group_entity = dialog.entity
+                                        break
+                            
+                            # If not found by name, just get the first group/channel
+                            if not group_entity:
+                                async for dialog in client.iter_dialogs(limit=30):
+                                    if dialog.is_group or dialog.is_channel:
+                                        group_entity = dialog.entity
+                                        break
                         except Exception as e:
                             print(f"Error joining group with invite link: {e}")
                             if "FLOOD_WAIT" in str(e):
@@ -1510,17 +1529,31 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                         # It's a public group
                         group_username = group_link.replace('https://t.me/', '').replace('@', '')
                         try:
-                            # Try to join the group
+                            # Try to get entity for the group
                             group_entity = await client.get_entity(group_username)
                             
                             # If it's a channel or supergroup, we need to join
                             if hasattr(group_entity, 'broadcast') and group_entity.broadcast:
                                 try:
                                     await client(functions.channels.JoinChannelRequest(group_entity))
-                                    await asyncio.sleep(2)
+                                    # Add more delay after joining
+                                    await asyncio.sleep(5)
+                                    joined_successfully = True
                                 except errors.UserAlreadyParticipantError:
                                     # Already in the channel
-                                    pass
+                                    joined_successfully = True
+                                except Exception as e:
+                                    print(f"Error joining channel: {e}")
+                                    results_per_account.append({
+                                        'phone': session.get('phone', 'Tidak diketahui'),
+                                        'name': session.get('first_name', 'Tidak diketahui'),
+                                        'invited': 0,
+                                        'status': f"Error join channel: {str(e)}"
+                                    })
+                                    continue
+                            else:
+                                # It's a regular chat, we're automatically in it
+                                joined_successfully = True
                         except Exception as e:
                             print(f"Error joining public group: {e}")
                             results_per_account.append({
@@ -1531,14 +1564,61 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                             })
                             continue
                 
-                    if not group_entity:
+                    # If we couldn't get the group entity or join
+                    if not group_entity or not joined_successfully:
                         results_per_account.append({
                             'phone': session.get('phone', 'Tidak diketahui'),
                             'name': session.get('first_name', 'Tidak diketahui'),
                             'invited': 0,
-                            'status': "Gak ketemu grupnya"
+                            'status': "Gak ketemu grupnya atau gagal join"
                         })
                         continue
+                    
+                    # Verify we have proper permissions in the group
+                    try:
+                        # Check if we can post in this chat
+                        permissions_check = await client(functions.channels.GetParticipantRequest(
+                            channel=group_entity,
+                            participant=await client.get_me()
+                        ))
+                        
+                        # Check if user has enough permissions to invite others
+                        can_invite = False
+                        participant_type = type(permissions_check.participant)
+                        
+                        if 'ChannelParticipantAdmin' in str(participant_type) or 'ChannelParticipantCreator' in str(participant_type):
+                            # Admin or creator can always invite
+                            can_invite = True
+                        elif 'ChannelParticipant' in str(participant_type):
+                            # Regular participant - check if group allows members to invite
+                            try:
+                                # Get full channel info to check settings
+                                channel_full = await client(functions.channels.GetFullChannelRequest(
+                                    channel=group_entity
+                                ))
+                                # Check if the channel allows members to invite
+                                if hasattr(channel_full.full_chat, 'participants_can_invite') and channel_full.full_chat.participants_can_invite:
+                                    can_invite = True
+                            except Exception as settings_error:
+                                print(f"Error checking channel settings: {settings_error}")
+                                # Assume we can't invite if we can't check settings
+                                can_invite = False
+                        
+                        if not can_invite:
+                            results_per_account.append({
+                                'phone': session.get('phone', 'Tidak diketahui'),
+                                'name': session.get('first_name', 'Tidak diketahui'),
+                                'invited': 0,
+                                'status': "Gak punya izin invite orang ke grup ini"
+                            })
+                            continue
+                    except Exception as perm_error:
+                        print(f"Error checking permissions: {perm_error}")
+                        # Give it a try anyway - the invite will fail if we don't have permissions
+                        pass
+                    
+                    # Add a longer delay after joining
+                    await asyncio.sleep(5)
                     
                     # Update status
                     await status_msg.edit(
@@ -1582,7 +1662,7 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                         "Status: Mulai invite kontak..."
                     )
                     
-                    # Start inviting contacts
+                    # Start inviting contacts with a longer delay between invites
                     for i, contact in enumerate(contacts):
                         # Check if we've reached our target
                         if total_invited >= target_count:
@@ -1601,7 +1681,18 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                             )
                         
                         try:
-                            # Try to add the contact to the group
+                            # Try to add the contact to the group with more detailed debugging
+                            print(f"Trying to invite {contact.first_name} to {group_entity.title if hasattr(group_entity, 'title') else 'group'}")
+                            
+                            # Add longer delay between invites (3-5 seconds)
+                            await asyncio.sleep(3 + random.random() * 2)
+                            
+                            # Ensure the group entity is correct and valid
+                            if not group_entity:
+                                print("Group entity is None")
+                                continue
+                                
+                            # Add the contact to the group
                             await client(functions.channels.InviteToChannelRequest(
                                 channel=group_entity,
                                 users=[contact]
@@ -1611,11 +1702,12 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                             invited_with_this_account += 1
                             total_invited += 1
                             
-                            # Small delay to avoid flood wait
-                            await asyncio.sleep(1 + random.random() * 2)
+                            # Add longer delay after successful invite (4-7 seconds)
+                            await asyncio.sleep(4 + random.random() * 3)
                         except errors.FloodWaitError as flood_error:
                             # Hit rate limit, move to next account
                             flood_time = flood_error.seconds
+                            print(f"FloodWaitError: Need to wait {flood_time} seconds")
                             results_per_account.append({
                                 'phone': session.get('phone', 'Tidak diketahui'),
                                 'name': session.get('first_name', 'Tidak diketahui'),
@@ -1623,6 +1715,36 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                                 'status': f"Rate limit (tunggu {flood_time} detik)"
                             })
                             break
+                        except errors.ChatAdminRequiredError:
+                            print(f"Error inviting {contact.first_name}: Admin permissions required")
+                            results_per_account.append({
+                                'phone': session.get('phone', 'Tidak diketahui'),
+                                'name': session.get('first_name', 'Tidak diketahui'),
+                                'invited': invited_with_this_account,
+                                'status': f"Perlu jadi admin untuk invite"
+                            })
+                            break
+                        except errors.ChatWriteForbiddenError:
+                            print(f"Error inviting {contact.first_name}: You can't write in this chat")
+                            results_per_account.append({
+                                'phone': session.get('phone', 'Tidak diketahui'),
+                                'name': session.get('first_name', 'Tidak diketahui'),
+                                'invited': invited_with_this_account,
+                                'status': f"Tidak bisa menulis di chat ini"
+                            })
+                            break
+                        except errors.UserNotMutualContactError:
+                            # Not a mutual contact, skip
+                            print(f"Error inviting {contact.first_name}: Not a mutual contact")
+                            continue
+                        except errors.UserPrivacyRestrictedError:
+                            # User's privacy settings prevent invitation
+                            print(f"Error inviting {contact.first_name}: Privacy settings prevent invitation")
+                            continue
+                        except errors.UserChannelsTooMuchError:
+                            # User is in too many channels already
+                            print(f"Error inviting {contact.first_name}: User is in too many channels")
+                            continue
                         except Exception as invite_error:
                             # Other error, continue with next contact
                             print(f"Error inviting {contact.first_name}: {invite_error}")
