@@ -10,7 +10,7 @@ import signal
 import traceback
 from datetime import datetime
 from telethon.sync import TelegramClient
-from telethon import events, Button
+from telethon import events, Button, functions, errors
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import GetHistoryRequest, DeleteHistoryRequest
 from telethon.tl.types import InputPeerUser, InputPeerChannel
@@ -142,7 +142,7 @@ async def kelola(event):
         # Create pagination for sessions
         await show_session_list(user_id, current_page)
     else:
-        await event.respond("Tidak ada session aktif yang tersimpan. Silakan check session terlebih dahulu.")
+        await event.respond("Gak ada session aktif nih. Check session dulu gih.")
 
 async def show_session_list(user_id, page=0):
     """Show paginated list of active sessions."""
@@ -152,7 +152,7 @@ async def show_session_list(user_id, page=0):
         user_current_page[user_id_str] = page
         
         if user_id_str not in active_sessions or not active_sessions[user_id_str]:
-            await bot.send_message(user_id, "Tidak ada session aktif yang tersimpan.")
+            await bot.send_message(user_id, "Gak ada session aktif nih. Upload session dulu yuk.")
             return
         
         # Get sessions for the user
@@ -200,11 +200,15 @@ async def show_session_list(user_id, page=0):
         buttons = session_buttons
         if nav_buttons:
             buttons.append(nav_buttons)
+            
+        # Add the invite contacts button if we have sessions
+        if len(sessions) > 0:
+            buttons.append([Button.inline("👥 Gas Invite Kontak ke Grup", "invite_contacts")])
         
         await bot.send_message(user_id, message, buttons=buttons)
     except Exception as e:
         print(f"Error in show_session_list: {e}")
-        await bot.send_message(user_id, f"Terjadi error saat menampilkan daftar session: {str(e)}")
+        await bot.send_message(user_id, f"Waduh error nih: {str(e)}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"page_")))
 async def handle_page_callback(event):
@@ -225,7 +229,7 @@ async def handle_page_callback(event):
         await show_session_list(user_id, page)
     except Exception as e:
         print(f"Error in handle_page_callback: {e}")
-        await event.answer(f"Terjadi error: {str(e)}")
+        await event.answer(f"Duh, error nih: {str(e)}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"session_")))
 async def handle_session_callback(event):
@@ -277,10 +281,10 @@ async def handle_session_callback(event):
             
             await event.edit(message, buttons=buttons)
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu nih.")
     except Exception as e:
         print(f"Error in handle_session_callback: {e}")
-        await event.answer(f"Terjadi error: {str(e)}")
+        await event.answer(f"Waduh error: {str(e)}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"refresh_")))
 async def refresh_session_info(event):
@@ -301,7 +305,7 @@ async def refresh_session_info(event):
             session = active_sessions[user_id_str][session_idx]
             
             # Create status message
-            status_msg = await event.respond("⏳ Memperbarui informasi session...")
+            status_msg = await event.respond("⏳ Tunggu bentar, lagi update info nih...")
             
             # Get fresh session information
             fresh_info = await get_detailed_session_info(session)
@@ -319,7 +323,7 @@ async def refresh_session_info(event):
                 
                 # Create a more detailed message with the updated info
                 message = (
-                    f"✅ **DETAIL SESSION (DIPERBARUI)**\n\n"
+                    f"✅ **DETAIL SESSION (FRESH UPDATE)**\n\n"
                     f"📱 **Nomor:** `{session.get('phone', 'Tidak diketahui')}`\n"
                     f"👤 **Nama Depan:** `{session.get('first_name', 'Tidak diketahui')}`\n"
                     f"👤 **Nama Belakang:** `{session.get('last_name', 'Tidak ada')}`\n"
@@ -354,16 +358,16 @@ async def refresh_session_info(event):
                 await status_msg.edit(message, buttons=buttons)
             else:
                 await status_msg.edit(
-                    f"❌ **GAGAL MEMPERBARUI INFO**\n\n"
-                    f"Pesan: {fresh_info['error']}",
+                    f"❌ **GAGAL UPDATE INFO NIH**\n\n"
+                    f"Pesan error: {fresh_info['error']}",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu nih.")
     except Exception as e:
         print(f"Error in refresh_session_info: {e}")
         try:
-            await event.answer(f"Terjadi error saat memperbarui info")
+            await event.answer(f"Ada error nih bro")
             await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
         except:
             pass
@@ -378,7 +382,7 @@ async def get_detailed_session_info(session):
     try:
         # Try to create a client with the saved session data
         if not session.get('session_data'):
-            return {'success': False, 'error': "Data session tidak tersedia"}
+            return {'success': False, 'error': "Data session gak ada nih"}
             
         # Write session data to file
         with open(session_path, 'wb') as f:
@@ -400,7 +404,7 @@ async def get_detailed_session_info(session):
         try:
             await asyncio.wait_for(client.connect(), timeout=20)
         except asyncio.TimeoutError:
-            return {'success': False, 'error': "Koneksi timeout"}
+            return {'success': False, 'error': "Koneksi timeout nih"}
         
         # Wait after connection
         await asyncio.sleep(2)
@@ -415,7 +419,7 @@ async def get_detailed_session_info(session):
             await asyncio.sleep(1)
             
             if not await client.is_user_authorized():
-                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+                return {'success': False, 'error': "Session gak valid, coba lagi nanti"}
         
         # Get detailed user info
         info = {}
@@ -499,11 +503,11 @@ async def get_detailed_session_info(session):
             
         except Exception as e:
             print(f"Error getting detailed info: {e}")
-            return {'success': False, 'error': f"Error saat mengambil info: {str(e)}"}
+            return {'success': False, 'error': f"Gagal ambil info: {str(e)}"}
     
     except FloodWaitError as e:
         print(f"FloodWaitError: {e}")
-        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+        return {'success': False, 'error': f"Telegram minta nunggu {e.seconds} detik"}
     except Exception as e:
         print(f"Error in get_detailed_session_info: {e}")
         traceback.print_exc()
@@ -544,7 +548,7 @@ async def back_to_list(event):
         await show_session_list(user_id, page)
     except Exception as e:
         print(f"Error in back_to_list: {e}")
-        await event.answer(f"Terjadi error: {str(e)}")
+        await event.answer(f"Waduh error nih: {str(e)}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"otp_")))
 async def get_otp(event):
@@ -565,7 +569,7 @@ async def get_otp(event):
             session = active_sessions[user_id_str][session_idx]
             
             # Create a status message
-            status_msg = await event.respond("⏳ Sedang mencari OTP terbaru...")
+            status_msg = await event.respond("⏳ Lagi nyari OTP terbaru...")
             
             # Try to get OTP
             otp_result = await get_latest_otp(session)
@@ -573,7 +577,7 @@ async def get_otp(event):
             if otp_result['success']:
                 # Hanya tampilkan kode OTP saja, tanpa pesan lengkap
                 await status_msg.edit(
-                    f"✅ **OTP DITEMUKAN**\n\n"
+                    f"✅ **KETEMU OTP NYA!**\n\n"
                     f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
                     f"🔢 **Kode OTP:** `{otp_result['otp']}`\n"
                     f"⏰ **Waktu:** `{otp_result['time']}`\n"
@@ -582,16 +586,16 @@ async def get_otp(event):
                 )
             else:
                 await status_msg.edit(
-                    f"❌ **OTP TIDAK DITEMUKAN**\n\n"
+                    f"❌ **OTP GAK KETEMU NIH**\n\n"
                     f"Pesan: {otp_result['error']}",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu.")
     except Exception as e:
         print(f"Error in get_otp: {e}")
         try:
-            await event.answer(f"Terjadi error saat mencari OTP")
+            await event.answer(f"Ada error nih waktu nyari OTP")
             await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
         except:
             pass
@@ -615,30 +619,30 @@ async def clear_chat_history(event):
             session = active_sessions[user_id_str][session_idx]
             
             # Create a status message
-            status_msg = await event.respond("⏳ Sedang menghapus riwayat chat...")
+            status_msg = await event.respond("⏳ Lagi bersihin chat history...")
             
             # Try to clear chat history
             clear_result = await clear_chat_messages(session)
             
             if clear_result['success']:
                 await status_msg.edit(
-                    f"✅ **CHAT BERHASIL DIHAPUS**\n\n"
+                    f"✅ **CHAT UDAH DIBERSIHIN**\n\n"
                     f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
                     f"📊 **Jumlah Chat Dihapus:** `{clear_result.get('count', 'Tidak diketahui')}`",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
             else:
                 await status_msg.edit(
-                    f"❌ **GAGAL MENGHAPUS CHAT**\n\n"
+                    f"❌ **GAGAL HAPUS CHAT**\n\n"
                     f"Pesan: {clear_result['error']}",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu.")
     except Exception as e:
         print(f"Error in clear_chat_history: {e}")
         try:
-            await event.answer(f"Terjadi error saat menghapus chat")
+            await event.answer(f"Ada error nih waktu hapus chat")
             await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
         except:
             pass
@@ -662,30 +666,30 @@ async def clear_otp_chat_history(event):
             session = active_sessions[user_id_str][session_idx]
             
             # Create a status message
-            status_msg = await event.respond("⏳ Sedang menghapus pesan OTP...")
+            status_msg = await event.respond("⏳ Lagi apus pesan OTP...")
             
             # Try to clear OTP chat history
             clear_result = await clear_otp_messages(session)
             
             if clear_result['success']:
                 await status_msg.edit(
-                    f"✅ **PESAN OTP BERHASIL DIHAPUS**\n\n"
+                    f"✅ **PESAN OTP UDAH DIBERSIHIN**\n\n"
                     f"📱 **Untuk:** `{session.get('phone', 'Tidak diketahui')}`\n"
                     f"📊 **Jumlah Chat OTP Dihapus:** `{clear_result.get('count', 'Tidak diketahui')}`",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
             else:
                 await status_msg.edit(
-                    f"❌ **GAGAL MENGHAPUS PESAN OTP**\n\n"
+                    f"❌ **GAGAL HAPUS PESAN OTP**\n\n"
                     f"Pesan: {clear_result['error']}",
                     buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")]
                 )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu.")
     except Exception as e:
         print(f"Error in clear_otp_chat_history: {e}")
         try:
-            await event.answer(f"Terjadi error saat menghapus pesan OTP")
+            await event.answer(f"Ada error nih waktu hapus pesan OTP")
             await event.respond(f"Error: {str(e)}", buttons=[Button.inline("⬅️ Kembali", f"session_{session_idx}")])
         except:
             pass
@@ -700,7 +704,7 @@ async def clear_otp_messages(session):
     try:
         # Try to create a client with the saved session data
         if not session.get('session_data'):
-            return {'success': False, 'error': "Data session tidak tersedia"}
+            return {'success': False, 'error': "Data session gak ada"}
             
         # Write session data to file
         with open(session_path, 'wb') as f:
@@ -737,7 +741,7 @@ async def clear_otp_messages(session):
             await asyncio.sleep(1)
             
             if not await client.is_user_authorized():
-                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+                return {'success': False, 'error': "Session gak valid, coba lagi nanti"}
         
         # Get dialogs and delete OTP senders only
         cleared_count = 0
@@ -810,18 +814,18 @@ async def clear_otp_messages(session):
                     continue
         except Exception as e:
             print(f"Error iterating dialogs for OTP clear: {e}")
-            return {'success': False, 'error': f"Error saat mencari dialog OTP: {str(e)}"}
+            return {'success': False, 'error': f"Error saat cari dialog OTP: {str(e)}"}
         
         if cleared_count > 0:
             return {'success': True, 'count': cleared_count, 'found': found_count}
         elif found_count > 0:
-            return {'success': False, 'error': f"Ditemukan {found_count} dialog OTP tapi gagal menghapus"}
+            return {'success': False, 'error': f"Ketemu {found_count} dialog OTP tapi gagal hapus"}
         else:
-            return {'success': False, 'error': f"Tidak ditemukan dialog OTP untuk dihapus"}
+            return {'success': False, 'error': f"Gak ada dialog OTP buat dihapus"}
     
     except FloodWaitError as e:
         print(f"FloodWaitError: {e}")
-        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+        return {'success': False, 'error': f"Telegram minta nunggu {e.seconds} detik"}
     except Exception as e:
         print(f"Error in clear_otp_messages: {e}")
         traceback.print_exc()
@@ -854,7 +858,7 @@ async def clear_chat_messages(session):
     try:
         # Try to create a client with the saved session data
         if not session.get('session_data'):
-            return {'success': False, 'error': "Data session tidak tersedia"}
+            return {'success': False, 'error': "Data session gak ada"}
             
         # Write session data to file
         with open(session_path, 'wb') as f:
@@ -891,7 +895,7 @@ async def clear_chat_messages(session):
             await asyncio.sleep(1)
             
             if not await client.is_user_authorized():
-                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+                return {'success': False, 'error': "Session gak valid, coba lagi nanti"}
         
         # Get dialogs
         dialogs_count = 0
@@ -916,16 +920,16 @@ async def clear_chat_messages(session):
                     continue
         except Exception as dialogs_error:
             print(f"Error iterating dialogs: {dialogs_error}")
-            return {'success': False, 'error': f"Error saat mengambil dialog: {str(dialogs_error)}"}
+            return {'success': False, 'error': f"Error saat ambil dialog: {str(dialogs_error)}"}
         
         if cleared_count > 0:
             return {'success': True, 'count': cleared_count}
         else:
-            return {'success': False, 'error': f"Tidak berhasil menghapus chat (dialogs: {dialogs_count})"}
+            return {'success': False, 'error': f"Gagal hapus chat (dialogs: {dialogs_count})"}
     
     except FloodWaitError as e:
         print(f"FloodWaitError: {e}")
-        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+        return {'success': False, 'error': f"Telegram minta nunggu {e.seconds} detik"}
     except Exception as e:
         print(f"Error in clear_chat_messages: {e}")
         traceback.print_exc()
@@ -976,17 +980,17 @@ async def confirm_delete_session(event):
             
             await event.edit(
                 f"⚠️ **KONFIRMASI HAPUS SESSION**\n\n"
-                f"Apakah Anda yakin ingin menghapus session ini?\n\n"
+                f"Yakin mau hapus session ini?\n\n"
                 f"📱 **Nomor:** `{session.get('phone', 'Tidak diketahui')}`\n"
                 f"👤 **Nama:** `{session.get('first_name', 'Tidak diketahui')}`\n"
                 f"🔖 **Username:** `@{session.get('username', 'tidak ada') or 'tidak ada'}`\n",
                 buttons=buttons
             )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu.")
     except Exception as e:
         print(f"Error in confirm_delete_session: {e}")
-        await event.answer(f"Terjadi error: {str(e)}")
+        await event.answer(f"Waduh error nih: {str(e)}")
 
 @events.register(events.CallbackQuery(data=lambda x: x.startswith(b"confirm_delete_")))
 async def delete_session(event):
@@ -1015,15 +1019,15 @@ async def delete_session(event):
             save_sessions()
             
             await event.edit(
-                f"✅ **SESSION TELAH DIHAPUS**\n\n"
-                f"Session untuk `{session.get('phone', 'Tidak diketahui')}` (`{session.get('first_name', 'Tidak diketahui')}`) telah dihapus.",
-                buttons=[Button.inline("⬅️ Kembali ke Daftar", f"back_to_list_{current_page}")]
+                f"✅ **SESSION UDAH DIHAPUS**\n\n"
+                f"Session buat `{session.get('phone', 'Tidak diketahui')}` (`{session.get('first_name', 'Tidak diketahui')}`) udah dihapus.",
+                buttons=[Button.inline("⬅️ Balik ke Daftar", f"back_to_list_{current_page}")]
             )
         else:
-            await event.answer("Session tidak ditemukan.")
+            await event.answer("Session nggak ketemu.")
     except Exception as e:
         print(f"Error in delete_session: {e}")
-        await event.answer(f"Terjadi error: {str(e)}")
+        await event.answer(f"Waduh error nih: {str(e)}")
 
 async def get_latest_otp(session):
     """Get the latest OTP message from the session."""
@@ -1035,7 +1039,7 @@ async def get_latest_otp(session):
     try:
         # Try to create a client with the saved session data
         if not session.get('session_data'):
-            return {'success': False, 'error': "Data session tidak tersedia"}
+            return {'success': False, 'error': "Data session gak ada"}
             
         # Write session data to file - ensure it has .session extension
         with open(session_path, 'wb') as f:
@@ -1072,7 +1076,7 @@ async def get_latest_otp(session):
             await asyncio.sleep(1)
             
             if not await client.is_user_authorized():
-                return {'success': False, 'error': "Session tidak terotorisasi setelah percobaan ulang"}
+                return {'success': False, 'error': "Session gak valid, coba lagi nanti"}
             
         # Add a small delay before message retrieval
         await asyncio.sleep(2)
@@ -1156,19 +1160,19 @@ async def get_latest_otp(session):
                 print(f"Error checking recent messages: {recent_error}")
             
             # If we get here, no OTP was found
-            return {'success': False, 'error': "Tidak menemukan pesan OTP dari server Telegram"}
+            return {'success': False, 'error': "Gak ketemu pesan OTP nih, coba lagi nanti"}
             
         except Exception as e:
             print(f"Error in message retrieval: {e}")
-            return {'success': False, 'error': f"Error saat mencari pesan: {str(e)}"}
+            return {'success': False, 'error': f"Error saat cari pesan: {str(e)}"}
     
     except FloodWaitError as e:
         print(f"FloodWaitError: {e}")
-        return {'success': False, 'error': f"Telegram meminta menunggu {e.seconds} detik"}
+        return {'success': False, 'error': f"Telegram minta nunggu {e.seconds} detik"}
     except PhoneNumberBannedError:
-        return {'success': False, 'error': "Nomor telepon dalam session telah dibanned"}
+        return {'success': False, 'error': "Nomor udah dibanned!"}
     except AuthKeyError:
-        return {'success': False, 'error': "Session key tidak valid"}
+        return {'success': False, 'error': "Session key gak valid"}
     except Exception as e:
         print(f"Error in get_latest_otp: {e}")
         traceback.print_exc()
@@ -1191,6 +1195,515 @@ async def get_latest_otp(session):
         except Exception as e:
             print(f"Error cleaning up session files: {e}")
 
+# Add the new invite contact functionality
+@events.register(events.CallbackQuery(data=b"invite_contacts"))
+async def invite_contacts_setup(event):
+    """Setup for inviting contacts to a group."""
+    try:
+        user_id = event.sender_id
+        
+        # Only allow admin to use the bot
+        if user_id != ADMIN_ID:
+            await event.answer("Sori bro, cuma admin yang bisa pake fitur ini.")
+            return
+        
+        # Ask for the group link
+        await event.edit(
+            "🔗 **MAU INVITE KONTAK KE GRUP NIH**\n\n"
+            "Cus, kirim link grup yang mau lu tambahin kontak.\n"
+            "Format: `https://t.me/+abc123` atau `@namegrup`",
+            buttons=[Button.inline("❌ Gajadi", f"back_to_list_0")]
+        )
+        
+        # Store that we're expecting a group link
+        user_id_str = str(user_id)
+        if 'pending_actions' not in globals():
+            globals()['pending_actions'] = {}
+        
+        globals()['pending_actions'][user_id_str] = {
+            'action': 'waiting_for_group_link',
+            'data': {}
+        }
+    except Exception as e:
+        print(f"Error in invite_contacts_setup: {e}")
+        await event.answer(f"Waduh error nih: {str(e)}")
+
+@events.register(events.NewMessage(func=lambda e: e.is_private))
+async def handle_invite_setup_messages(event):
+    """Handle messages for invite setup process."""
+    try:
+        user_id = event.sender_id
+        user_id_str = str(user_id)
+        
+        # Only allow admin
+        if user_id != ADMIN_ID:
+            return
+        
+        # Check if we're expecting a message from this user
+        if 'pending_actions' not in globals() or user_id_str not in globals()['pending_actions']:
+            # This is just a regular message, let the handle_message function handle it
+            return
+        
+        pending_action = globals()['pending_actions'][user_id_str]
+        
+        # Handle the different stages of setup
+        if pending_action['action'] == 'waiting_for_group_link':
+            # Get the group link
+            group_link = event.text.strip()
+            
+            # Store the group link
+            pending_action['data']['group_link'] = group_link
+            pending_action['action'] = 'waiting_for_target_count'
+            
+            # Ask for target count
+            await event.respond(
+                "🎯 **MAU INVITE BERAPA NIH BOS?**\n\n"
+                f"Link grup: `{group_link}`\n\n"
+                "Mau invite berapa banyak kontak? Ketik angkanya aja (misal: 50)",
+                buttons=[Button.inline("❌ Gajadi", f"back_to_list_0")]
+            )
+            
+            # Delete the user's message containing the group link for cleanliness
+            await event.delete()
+            
+        elif pending_action['action'] == 'waiting_for_target_count':
+            # Try to get target count
+            try:
+                target_count = int(event.text.strip())
+                if target_count <= 0:
+                    await event.respond(
+                        "❌ Masa targetnya 0 sih? Isi yang bener dong.",
+                        buttons=[Button.inline("❌ Gajadi", f"back_to_list_0")]
+                    )
+                    return
+            except ValueError:
+                await event.respond(
+                    "❌ Format gak valid. Masukkin angka dong, jangan aneh-aneh.",
+                    buttons=[Button.inline("❌ Gajadi", f"back_to_list_0")]
+                )
+                return
+            
+            # Store the target count and prepare data
+            group_link = pending_action['data']['group_link']
+            
+            # Clear the pending action
+            del globals()['pending_actions'][user_id_str]
+            
+            # Delete the user's message containing the target count for cleanliness
+            await event.delete()
+            
+            # Confirm and start the invite process
+            confirmation_msg = await event.respond(
+                "✅ **KONFIRMASI INVITE KONTAK**\n\n"
+                f"📱 Link grup: `{group_link}`\n"
+                f"🎯 Target invite: `{target_count}`\n\n"
+                "Siap gaskeun nih?",
+                buttons=[
+                    [
+                        Button.inline("✅ Gas!", f"start_invite_{group_link}_{target_count}"),
+                        Button.inline("❌ Gajadi", f"back_to_list_0")
+                    ]
+                ]
+            )
+    except Exception as e:
+        print(f"Error in handle_invite_setup_messages: {e}")
+        if 'pending_actions' in globals() and user_id_str in globals()['pending_actions']:
+            del globals()['pending_actions'][user_id_str]
+        await event.respond(f"❌ Waduh error: {str(e)}", buttons=[Button.inline("⬅️ Balik", f"back_to_list_0")])
+
+@events.register(events.CallbackQuery(data=lambda x: x.startswith(b"start_invite_")))
+async def start_invite_process(event):
+    """Start the process of inviting contacts to a group."""
+    try:
+        user_id = event.sender_id
+        user_id_str = str(user_id)
+        
+        # Only allow admin to use the bot
+        if user_id != ADMIN_ID:
+            await event.answer("Sori bro, cuma admin yang bisa pake fitur ini.")
+            return
+        
+        # Parse the data from the callback
+        data = event.data.decode().split("_")
+        group_link = data[2]
+        target_count = int(data[3])
+        
+        # Show the processing message
+        status_msg = await event.edit(
+            "⏳ **MULAI PROSES INVITE KONTAK**\n\n"
+            f"🔗 Link grup: `{group_link}`\n"
+            f"🎯 Target invite: `{target_count}`\n\n"
+            "Siap-siap akun buat invite..."
+        )
+        
+        # Start the invite process
+        create_task(process_invite_contacts(user_id, group_link, target_count, status_msg))
+        
+    except Exception as e:
+        print(f"Error in start_invite_process: {e}")
+        await event.answer(f"Waduh error nih: {str(e)}")
+        await event.edit(f"❌ Waduh error: {str(e)}", buttons=[Button.inline("⬅️ Balik", f"back_to_list_0")])
+
+async def process_invite_contacts(user_id, group_link, target_count, status_msg):
+    """Process inviting contacts to a group using multiple accounts."""
+    user_id_str = str(user_id)
+    
+    # Keep track of results
+    total_invited = 0
+    results_per_account = []
+    
+    try:
+        # Check if we have sessions
+        if user_id_str not in active_sessions or not active_sessions[user_id_str]:
+            await status_msg.edit(
+                "❌ **GAK ADA SESSION AKTIF**\n\n"
+                "Gak ada session buat dipakai nih. Upload session dulu gih.",
+                buttons=[Button.inline("⬅️ Balik", f"back_to_list_0")]
+            )
+            return
+        
+        # Get the list of sessions
+        sessions = active_sessions[user_id_str]
+        
+        # Update status message
+        await status_msg.edit(
+            "⏳ **PROSES INVITE KONTAK DIMULAI**\n\n"
+            f"🔗 Link grup: `{group_link}`\n"
+            f"🎯 Target invite: `{target_count}`\n"
+            f"📱 Total akun: `{len(sessions)}`\n\n"
+            "Status: Nyiapin sesi telegram..."
+        )
+        
+        # Process each session until we reach the target
+        for session_idx, session in enumerate(sessions):
+            if total_invited >= target_count:
+                break
+                
+            # Update status message for this account
+            await status_msg.edit(
+                f"⏳ **PROSES INVITE KONTAK ({total_invited}/{target_count})**\n\n"
+                f"🔗 Link grup: `{group_link}`\n"
+                f"📱 Pake akun: `{session.get('phone', 'Tidak diketahui')}` ({session_idx+1}/{len(sessions)})\n"
+                f"👤 Nama: `{session.get('first_name', 'Tidak diketahui')}`\n\n"
+                "Status: Konek ke Telegram..."
+            )
+            
+            # Use this session to invite contacts
+            invited_with_this_account = 0
+            
+            # Create a client for this session
+            client = None
+            session_path = f"temp_session_{session.get('user_id', 'unknown')}_{int(time.time())}.session"
+            
+            try:
+                # Write session data to file
+                if not session.get('session_data'):
+                    results_per_account.append({
+                        'phone': session.get('phone', 'Tidak diketahui'),
+                        'name': session.get('first_name', 'Tidak diketahui'),
+                        'invited': 0,
+                        'status': "Data session gak ada"
+                    })
+                    continue
+                    
+                with open(session_path, 'wb') as f:
+                    f.write(bytes.fromhex(session['session_data']))
+                
+                # Connect to Telegram
+                client = TelegramClient(
+                    session_path.replace('.session', ''), 
+                    API_ID, 
+                    API_HASH, 
+                    connection_retries=5,
+                    retry_delay=2
+                )
+                
+                # Connect with timeout
+                try:
+                    await asyncio.wait_for(client.connect(), timeout=20)
+                except asyncio.TimeoutError:
+                    results_per_account.append({
+                        'phone': session.get('phone', 'Tidak diketahui'),
+                        'name': session.get('first_name', 'Tidak diketahui'),
+                        'invited': 0,
+                        'status': "Koneksi timeout"
+                    })
+                    continue
+                
+                # Wait after connection
+                await asyncio.sleep(2)
+                
+                # Ensure we're connected and authorized
+                if not await client.is_user_authorized():
+                    print(f"Session {session.get('phone')} tidak terotorisasi")
+                    # Try once more with forced reconnection
+                    await client.disconnect()
+                    await asyncio.sleep(2)
+                    await client.connect()
+                    await asyncio.sleep(1)
+                    
+                    if not await client.is_user_authorized():
+                        results_per_account.append({
+                            'phone': session.get('phone', 'Tidak diketahui'),
+                            'name': session.get('first_name', 'Tidak diketahui'),
+                            'invited': 0,
+                            'status': "Session gak valid"
+                        })
+                        continue
+                
+                # Update status
+                await status_msg.edit(
+                    f"⏳ **PROSES INVITE KONTAK ({total_invited}/{target_count})**\n\n"
+                    f"🔗 Link grup: `{group_link}`\n"
+                    f"📱 Pake akun: `{session.get('phone', 'Tidak diketahui')}` ({session_idx+1}/{len(sessions)})\n"
+                    f"👤 Nama: `{session.get('first_name', 'Tidak diketahui')}`\n\n"
+                    "Status: Lagi join grup..."
+                )
+                
+                # Try to join the group first
+                group_entity = None
+                try:
+                    # Check if it's a private group link
+                    if group_link.startswith('https://t.me/+') or group_link.startswith('https://t.me/joinchat/'):
+                        invite_hash = group_link.split('/')[-1]
+                        if invite_hash.startswith('+'):
+                            invite_hash = invite_hash[1:]
+                        
+                        try:
+                            # Try to join the group
+                            await client(functions.messages.ImportChatInviteRequest(invite_hash))
+                            await asyncio.sleep(2)
+                            
+                            # Find the group we just joined
+                            async for dialog in client.iter_dialogs(limit=10):
+                                if dialog.is_group or dialog.is_channel:
+                                    group_entity = dialog.entity
+                                    break
+                        except errors.UserAlreadyParticipantError:
+                            # Already in the group, try to find it
+                            async for dialog in client.iter_dialogs(limit=20):
+                                if dialog.is_group or dialog.is_channel:
+                                    group_entity = dialog.entity
+                                    break
+                        except Exception as e:
+                            print(f"Error joining group with invite link: {e}")
+                            if "FLOOD_WAIT" in str(e):
+                                flood_time = int(str(e).split('of ')[1].split(' seconds')[0])
+                                results_per_account.append({
+                                    'phone': session.get('phone', 'Tidak diketahui'),
+                                    'name': session.get('first_name', 'Tidak diketahui'),
+                                    'invited': 0,
+                                    'status': f"Rate limit pas join grup (tunggu {flood_time} detik)"
+                                })
+                                continue
+                            else:
+                                results_per_account.append({
+                                    'phone': session.get('phone', 'Tidak diketahui'),
+                                    'name': session.get('first_name', 'Tidak diketahui'),
+                                    'invited': 0,
+                                    'status': f"Error join grup: {str(e)}"
+                                })
+                                continue
+                    else:
+                        # It's a public group
+                        group_username = group_link.replace('https://t.me/', '').replace('@', '')
+                        try:
+                            # Try to join the group
+                            group_entity = await client.get_entity(group_username)
+                            
+                            # If it's a channel or supergroup, we need to join
+                            if hasattr(group_entity, 'broadcast') and group_entity.broadcast:
+                                try:
+                                    await client(functions.channels.JoinChannelRequest(group_entity))
+                                    await asyncio.sleep(2)
+                                except errors.UserAlreadyParticipantError:
+                                    # Already in the channel
+                                    pass
+                        except Exception as e:
+                            print(f"Error joining public group: {e}")
+                            results_per_account.append({
+                                'phone': session.get('phone', 'Tidak diketahui'),
+                                'name': session.get('first_name', 'Tidak diketahui'),
+                                'invited': 0,
+                                'status': f"Error join grup publik: {str(e)}"
+                            })
+                            continue
+                
+                    if not group_entity:
+                        results_per_account.append({
+                            'phone': session.get('phone', 'Tidak diketahui'),
+                            'name': session.get('first_name', 'Tidak diketahui'),
+                            'invited': 0,
+                            'status': "Gak ketemu grupnya"
+                        })
+                        continue
+                    
+                    # Update status
+                    await status_msg.edit(
+                        f"⏳ **PROSES INVITE KONTAK ({total_invited}/{target_count})**\n\n"
+                        f"🔗 Link grup: `{group_link}`\n"
+                        f"📱 Pake akun: `{session.get('phone', 'Tidak diketahui')}` ({session_idx+1}/{len(sessions)})\n"
+                        f"👤 Nama: `{session.get('first_name', 'Tidak diketahui')}`\n\n"
+                        "Status: Ambil kontak mutual..."
+                    )
+                    
+                    # Get mutual contacts
+                    contacts = []
+                    try:
+                        async for contact in client.iter_contacts():
+                            if contact.mutual_contact:
+                                contacts.append(contact)
+                    except Exception as contact_error:
+                        print(f"Error getting mutual contacts: {contact_error}")
+                        results_per_account.append({
+                            'phone': session.get('phone', 'Tidak diketahui'),
+                            'name': session.get('first_name', 'Tidak diketahui'),
+                            'invited': 0,
+                            'status': f"Error ambil kontak: {str(contact_error)}"
+                        })
+                        continue
+                    
+                    # Update status
+                    await status_msg.edit(
+                        f"⏳ **PROSES INVITE KONTAK ({total_invited}/{target_count})**\n\n"
+                        f"🔗 Link grup: `{group_link}`\n"
+                        f"📱 Pake akun: `{session.get('phone', 'Tidak diketahui')}` ({session_idx+1}/{len(sessions)})\n"
+                        f"👤 Nama: `{session.get('first_name', 'Tidak diketahui')}`\n"
+                        f"📊 Kontak mutual: `{len(contacts)}`\n\n"
+                        "Status: Mulai invite kontak..."
+                    )
+                    
+                    # Start inviting contacts
+                    for i, contact in enumerate(contacts):
+                        # Check if we've reached our target
+                        if total_invited >= target_count:
+                            break
+                            
+                        # Update status periodically
+                        if i % 5 == 0 or i == len(contacts) - 1:
+                            await status_msg.edit(
+                                f"⏳ **PROSES INVITE KONTAK ({total_invited}/{target_count})**\n\n"
+                                f"🔗 Link grup: `{group_link}`\n"
+                                f"📱 Pake akun: `{session.get('phone', 'Tidak diketahui')}` ({session_idx+1}/{len(sessions)})\n"
+                                f"👤 Nama: `{session.get('first_name', 'Tidak diketahui')}`\n"
+                                f"📊 Progress: `{i+1}/{len(contacts)}` kontak\n"
+                                f"✅ Invited: `{invited_with_this_account}` kontak\n\n"
+                                f"Status: Invite {contact.first_name}..."
+                            )
+                        
+                        try:
+                            # Try to add the contact to the group
+                            await client(functions.channels.InviteToChannelRequest(
+                                channel=group_entity,
+                                users=[contact]
+                            ))
+                            
+                            # Successfully invited
+                            invited_with_this_account += 1
+                            total_invited += 1
+                            
+                            # Small delay to avoid flood wait
+                            await asyncio.sleep(1 + random.random() * 2)
+                        except errors.FloodWaitError as flood_error:
+                            # Hit rate limit, move to next account
+                            flood_time = flood_error.seconds
+                            results_per_account.append({
+                                'phone': session.get('phone', 'Tidak diketahui'),
+                                'name': session.get('first_name', 'Tidak diketahui'),
+                                'invited': invited_with_this_account,
+                                'status': f"Rate limit (tunggu {flood_time} detik)"
+                            })
+                            break
+                        except Exception as invite_error:
+                            # Other error, continue with next contact
+                            print(f"Error inviting {contact.first_name}: {invite_error}")
+                            continue
+                    
+                    # Add the results for this account
+                    if invited_with_this_account > 0 or not results_per_account:
+                        results_per_account.append({
+                            'phone': session.get('phone', 'Tidak diketahui'),
+                            'name': session.get('first_name', 'Tidak diketahui'),
+                            'invited': invited_with_this_account,
+                            'status': "Selesai" if invited_with_this_account > 0 else "Gak ada kontak yang diinvite"
+                        })
+                    
+                except Exception as e:
+                    print(f"Error in group join process: {e}")
+                    traceback.print_exc()
+                    results_per_account.append({
+                        'phone': session.get('phone', 'Tidak diketahui'),
+                        'name': session.get('first_name', 'Tidak diketahui'),
+                        'invited': invited_with_this_account,
+                        'status': f"Error: {str(e)}"
+                    })
+            except Exception as session_error:
+                print(f"Error with session {session.get('phone')}: {session_error}")
+                traceback.print_exc()
+                results_per_account.append({
+                    'phone': session.get('phone', 'Tidak diketahui'),
+                    'name': session.get('first_name', 'Tidak diketahui'),
+                    'invited': 0,
+                    'status': f"Error session: {str(session_error)}"
+                })
+            finally:
+                # Disconnect the client
+                if client:
+                    try:
+                        await client.disconnect()
+                    except:
+                        pass
+                
+                # Clean up session file
+                try:
+                    await asyncio.sleep(1)  # Small delay before cleanup
+                    if os.path.exists(session_path):
+                        os.remove(session_path)
+                    if os.path.exists(session_path.replace('.session', '') + '.session'):
+                        os.remove(session_path.replace('.session', '') + '.session')
+                except Exception as e:
+                    print(f"Error cleaning up session files: {e}")
+        
+        # Process complete, show final results
+        results_text = "📊 **HASIL INVITE PER AKUN:**\n\n"
+        for i, result in enumerate(results_per_account):
+            results_text += f"{i+1}. `{result['phone']}` ({result['name']})\n"
+            results_text += f"   ✅ Invited: `{result['invited']}` kontak\n"
+            results_text += f"   📝 Status: `{result['status']}`\n\n"
+        
+        await status_msg.edit(
+            f"✅ **INVITE KONTAK SELESAI CUY**\n\n"
+            f"🔗 Link grup: `{group_link}`\n"
+            f"🎯 Target: `{target_count}`\n"
+            f"👥 Total invited: `{total_invited}`\n"
+            f"📱 Akun dipake: `{len(results_per_account)}`\n\n"
+            f"{results_text}",
+            buttons=[Button.inline("⬅️ Balik ke Daftar", f"back_to_list_0")]
+        )
+        
+    except Exception as e:
+        print(f"Error in process_invite_contacts: {e}")
+        traceback.print_exc()
+        
+        # Show error with any results we got
+        results_text = ""
+        if results_per_account:
+            results_text = "📊 **HASIL INVITE PER AKUN:**\n\n"
+            for i, result in enumerate(results_per_account):
+                results_text += f"{i+1}. `{result['phone']}` ({result['name']})\n"
+                results_text += f"   ✅ Invited: `{result['invited']}` kontak\n"
+                results_text += f"   📝 Status: `{result['status']}`\n\n"
+        
+        await status_msg.edit(
+            f"❌ **ERROR COY DALAM PROSES INVITE**\n\n"
+            f"Error: {str(e)}\n\n"
+            f"🔗 Link grup: `{group_link}`\n"
+            f"🎯 Target: `{target_count}`\n"
+            f"👥 Total invited: `{total_invited}`\n"
+            f"{results_text}",
+            buttons=[Button.inline("⬅️ Balik ke Daftar", f"back_to_list_0")]
+        )
+
 @events.register(events.NewMessage(func=lambda e: e.is_private))
 async def handle_message(event):
     """Handle incoming messages in private chats."""
@@ -1200,6 +1713,12 @@ async def handle_message(event):
         # Only allow admin to use the bot
         if user_id != ADMIN_ID:
             await event.respond("Maaf, hanya admin bot yang dapat menggunakan fitur ini.")
+            return
+        
+        # Check if the message is being handled by handle_invite_setup_messages
+        user_id_str = str(user_id)
+        if 'pending_actions' in globals() and user_id_str in globals()['pending_actions']:
+            # Let handle_invite_setup_messages handle this
             return
         
         # Check if the message contains a document (file)
@@ -1212,7 +1731,7 @@ async def handle_message(event):
             if file_name.lower().endswith('.zip') or mime_type == 'application/zip':
                 # Download the zip file
                 download_path = f"temp_zip_{int(time.time())}.zip"
-                await event.respond(f"⏬ Mengunduh file ZIP: `{file_name}`...")
+                await event.respond(f"⏬ Lagi download file ZIP: `{file_name}`...")
                 
                 # Download with a small delay to prevent errors
                 await asyncio.sleep(0.5)
@@ -1225,7 +1744,7 @@ async def handle_message(event):
                 download_path = f"temp_{int(time.time())}_{file_name}"
                 
                 # Send a processing message
-                processing_msg = await event.respond(f"⏬ Mengunduh file session: `{file_name}`...")
+                processing_msg = await event.respond(f"⏬ Lagi download file session: `{file_name}`...")
                 
                 # Download with a small delay to prevent errors
                 await asyncio.sleep(0.5)
@@ -1235,15 +1754,15 @@ async def handle_message(event):
                 await process_single_session(download_path, user_id, event.id, processing_msg)
     except Exception as e:
         print(f"Error in handle_message: {e}")
-        await event.respond(f"❌ Terjadi error saat memproses file: {str(e)}")
+        await event.respond(f"❌ Error pas proses file: {str(e)}")
 
 async def process_single_session(file_path, user_id, message_id, processing_msg=None):
     """Process a single session file."""
     try:
         if processing_msg:
-            await processing_msg.edit("⏳ Memproses file session...")
+            await processing_msg.edit("⏳ Lagi proses file session...")
         else:
-            processing_msg = await bot.send_message(user_id, "⏳ Memproses file session...", reply_to=message_id)
+            processing_msg = await bot.send_message(user_id, "⏳ Lagi proses file session...", reply_to=message_id)
         
         # Add a small delay to prevent errors
         await asyncio.sleep(1)
@@ -1297,7 +1816,7 @@ async def process_single_session(file_path, user_id, message_id, processing_msg=
                 save_sessions()
             
             message = (
-                f"✅ **SESSION VALID**\n\n"
+                f"✅ **SESSION VALID BRO**\n\n"
                 f"📱 **Nomor:** `{result.get('phone', 'Tidak diketahui')}`\n"
                 f"👤 **Nama Depan:** `{result.get('first_name', 'Tidak diketahui')}`\n"
                 f"👤 **Nama Belakang:** `{result.get('last_name', 'Tidak ada')}`\n"
@@ -1309,7 +1828,7 @@ async def process_single_session(file_path, user_id, message_id, processing_msg=
                 f"🔑 **Password Hint:** `{result.get('password_hint', 'Tidak ada')}`\n"
             )
         else:
-            message = f"❌ **SESSION TIDAK VALID**\n\nError: {result.get('error', 'Error tidak diketahui')}"
+            message = f"❌ **SESSION GA VALID CUY**\n\nError: {result.get('error', 'Error tidak diketahui')}"
         
         # Edit the processing message with the results
         await processing_msg.edit(message)
@@ -1323,7 +1842,7 @@ async def process_single_session(file_path, user_id, message_id, processing_msg=
     except Exception as e:
         print(f"Error in process_single_session: {e}")
         if processing_msg:
-            await processing_msg.edit(f"❌ Terjadi error saat memproses session: {str(e)}")
+            await processing_msg.edit(f"❌ Error pas proses session: {str(e)}")
 
 async def process_zip_file(file_path, user_id, message_id):
     """Extract and process session files from a zip archive."""
@@ -1333,7 +1852,7 @@ async def process_zip_file(file_path, user_id, message_id):
     try:
         processing_msg = await bot.send_message(
             user_id,
-            "⏳ Memproses file ZIP...",
+            "⏳ Lagi proses file ZIP...",
             reply_to=message_id
         )
         
@@ -1352,9 +1871,9 @@ async def process_zip_file(file_path, user_id, message_id):
                 zip_ref.extractall(extract_dir)
             
             # Update processing message
-            await processing_msg.edit("⏳ ZIP diekstrak, mencari file session...")
+            await processing_msg.edit("⏳ ZIP udah diextract, lagi cari file session...")
         except zipfile.BadZipFile:
-            await processing_msg.edit("❌ File tidak valid atau bukan file ZIP.")
+            await processing_msg.edit("❌ File ga valid atau bukan ZIP bro.")
             return
         
         # Look for session files in the expected structure: sessions/users/
@@ -1375,14 +1894,14 @@ async def process_zip_file(file_path, user_id, message_id):
             total_files = len(session_files)
             
             if total_files > 0:
-                await processing_msg.edit(f"⏳ Ditemukan {total_files} file session potensial, memproses...")
+                await processing_msg.edit(f"⏳ Ketemu {total_files} file session, lagi diproses...")
                 
                 # Process each session file
                 count = 0
                 for session_file in session_files:
                     count += 1
                     if count % 3 == 0:  # Update progress every 3 files
-                        await processing_msg.edit(f"⏳ Memproses file session {count}/{total_files}...")
+                        await processing_msg.edit(f"⏳ Lagi proses file session {count}/{total_files}...")
                     
                     sessions_found += 1
                     
@@ -1438,16 +1957,16 @@ async def process_zip_file(file_path, user_id, message_id):
                 # Save sessions
                 save_sessions()
             else:
-                await processing_msg.edit("❌ Tidak ditemukan file session di dalam struktur sessions/users/ pada file ZIP.")
+                await processing_msg.edit("❌ Gak ketemu file session di folder sessions/users/ di ZIP-nya.")
                 return
         else:
-            await processing_msg.edit("❌ Struktur folder sessions/users/ tidak ditemukan di dalam file ZIP.")
+            await processing_msg.edit("❌ Folder sessions/users/ gak ada di ZIP-nya.")
             return
             
     except Exception as e:
         print(f"Error in process_zip_file: {e}")
         if processing_msg:
-            await processing_msg.edit(f"❌ Error saat memproses file ZIP: {str(e)}")
+            await processing_msg.edit(f"❌ Error pas proses ZIP: {str(e)}")
         return
     finally:
         # Clean up
@@ -1464,15 +1983,15 @@ async def process_zip_file(file_path, user_id, message_id):
     if sessions_found > 0:
         if processing_msg:
             await processing_msg.edit(
-                f"✅ **PROSES ZIP SELESAI**\n\n"
+                f"✅ **PROSES ZIP KELAR**\n\n"
                 f"📊 **Hasil:**\n"
-                f"- Session ditemukan: {sessions_found}\n"
+                f"- Session ketemu: {sessions_found}\n"
                 f"- Session valid: {sessions_valid}\n\n"
-                f"Gunakan /kelola untuk melihat dan mengelola session yang valid."
+                f"Pake /kelola buat lihat dan kelola session-nya."
             )
     else:
         if processing_msg:
-            await processing_msg.edit("❌ Tidak ada file session yang ditemukan dalam file ZIP.")
+            await processing_msg.edit("❌ Gak ada file session yang ketemu di ZIP.")
 
 async def check_session_file(file_path):
     """Check a session file and extract information from it."""
@@ -1574,7 +2093,7 @@ async def check_session_file(file_path):
                 # Session is still valid but we couldn't get user info
                 result['error_details'] = str(e)
         else:
-            result['error'] = "Session tidak terotorisasi"
+            result['error'] = "Session gak valid"
     except SessionPasswordNeededError:
         # This is actually a valid session, but with 2FA enabled
         result['valid'] = True
@@ -1595,13 +2114,13 @@ async def check_session_file(file_path):
         except:
             pass
     except PhoneNumberInvalidError:
-        result['error'] = "Nomor telepon dalam session tidak valid"
+        result['error'] = "Nomor telepon dalam session gak valid"
     except PhoneNumberBannedError:
-        result['error'] = "Nomor telepon dalam session telah dibanned"
+        result['error'] = "Nomor telepon dalam session udah dibanned"
     except AuthKeyError:
-        result['error'] = "Session key tidak valid"
+        result['error'] = "Session key gak valid"
     except FloodWaitError as e:
-        result['error'] = f"Rate limited oleh Telegram. Tunggu {e.seconds} detik."
+        result['error'] = f"Rate limited, tunggu {e.seconds} detik"
     except Exception as e:
         print(f"Error in check_session_file: {e}")
         traceback.print_exc()
@@ -1668,6 +2187,11 @@ async def main():
     bot.add_event_handler(clear_otp_chat_history)
     bot.add_event_handler(confirm_delete_session)
     bot.add_event_handler(delete_session)
+    
+    # Register new invite handlers
+    bot.add_event_handler(invite_contacts_setup)
+    bot.add_event_handler(handle_invite_setup_messages)
+    bot.add_event_handler(start_invite_process)
     
     print("Bot telah dijalankan...")
     
