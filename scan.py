@@ -13,6 +13,7 @@ from telethon.sync import TelegramClient
 from telethon import events, Button, functions, errors
 from telethon.tl.functions.users import GetFullUserRequest
 from telethon.tl.functions.messages import GetHistoryRequest, DeleteHistoryRequest
+from telethon.tl.functions.contacts import GetContactsRequest
 from telethon.tl.types import InputPeerUser, InputPeerChannel
 from telethon.errors import SessionPasswordNeededError, PhoneNumberInvalidError, FloodWaitError
 from telethon.errors.rpcerrorlist import AuthKeyError, PhoneNumberBannedError
@@ -479,11 +480,12 @@ async def get_detailed_session_info(session):
             
             # Count contacts
             try:
-                contacts = []
-                async for contact in client.iter_contacts(limit=100):
-                    contacts.append(contact)
-                info['contact_count'] = len(contacts)
-            except:
+                # Use GetContactsRequest instead of iter_contacts
+                from telethon.tl.functions.contacts import GetContactsRequest
+                result = await client(GetContactsRequest(hash=0))
+                info['contact_count'] = len(result.users)
+            except Exception as e:
+                print(f"Error counting contacts: {e}")
                 info['contact_count'] = 'Tidak dapat diambil'
             
             # Mark session as active
@@ -1550,9 +1552,16 @@ async def process_invite_contacts(user_id, group_link, target_count, status_msg)
                     # Get mutual contacts
                     contacts = []
                     try:
-                        async for contact in client.iter_contacts():
-                            if contact.mutual_contact:
-                                contacts.append(contact)
+                        # Use GetContactsRequest instead of iter_contacts
+                        from telethon.tl.functions.contacts import GetContactsRequest
+                        result = await client(GetContactsRequest(hash=0))
+                        
+                        # Filter for mutual contacts
+                        for user in result.users:
+                            if hasattr(user, 'mutual_contact') and user.mutual_contact:
+                                contacts.append(user)
+                        
+                        print(f"Found {len(contacts)} mutual contacts")
                     except Exception as contact_error:
                         print(f"Error getting mutual contacts: {contact_error}")
                         results_per_account.append({
